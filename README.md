@@ -2,6 +2,9 @@
 
 [![CI](https://github.com/Alexfosuaa/Grounded-facts/actions/workflows/ci.yml/badge.svg)](https://github.com/Alexfosuaa/Grounded-facts/actions/workflows/ci.yml)
 
+**🔗 Live demo: <https://grounded-facts.onrender.com>**
+*(Free instance — the first visit after it's been idle can take ~50s to wake, then it's fast.)*
+
 Grounded Facts turns any topic into a set of **source-grounded, cited facts** and
 can email them on a schedule. It is a compact but complete
 **Retrieval-Augmented Generation (RAG)** pipeline: it fetches sources, chunks and
@@ -197,6 +200,15 @@ but not sent. `GET /api/info` exposes this as `email_dry_run`, the UI shows a
 email** (subject + body) a subscription would receive — so the feature is fully
 demonstrable offline.
 
+**To send real email** (and drop the banner), set `SMTP_HOST` / `SMTP_USER` /
+`SMTP_PASS` / `FROM_EMAIL` and make sure `EMAIL_DRY_RUN` is `0`. On the Render
+deploy also set `RUN_SCHEDULER=1` (already in `render.yaml`) so a background
+scheduler inside the web service actually delivers due digests — otherwise the
+API stores subscriptions but nothing sends them. A new subscription is due
+immediately, so the first digest goes out within ~60s while the service is awake.
+See [`DEPLOY.md`](./DEPLOY.md#sending-real-email) for a copy-paste SMTP setup
+(Gmail app password or a transactional provider).
+
 ---
 
 ## Running locally
@@ -254,6 +266,8 @@ docker compose up --build
 
 ### Deploy publicly (permanent URL, any device)
 
+**Live instance: <https://grounded-facts.onrender.com>**
+
 One click — Render builds the Dockerfile (compiling the frontend fresh, so every
 feature is included) and hosts the whole app on its free tier. Sign in with
 GitHub, then **Apply**:
@@ -261,8 +275,9 @@ GitHub, then **Apply**:
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Alexfosuaa/Grounded-facts)
 
 See [`DEPLOY.md`](./DEPLOY.md) for the full walkthrough (and Fly.io / Railway /
-plain-Docker alternatives). The image runs on any Docker host unchanged because
-it binds the `$PORT` the host provides.
+plain-Docker alternatives), including [how to enable real email](./DEPLOY.md#sending-real-email).
+The image runs on any Docker host unchanged because it binds the `$PORT` the host
+provides.
 
 ---
 
@@ -281,8 +296,9 @@ Copy `.env.example` to `.env` to change any of them.
 | `OPENAI_API_KEY`      | *(unset)*          | Enables grounded LLM generation                      |
 | `OPENAI_MODEL`        | `gpt-4o-mini`      | Model used when an API key is set                    |
 | `USE_LLM`             | `auto`             | Set `0` to force the offline extractive fallback     |
-| `EMAIL_DRY_RUN`       | `1` (when no SMTP) | Log emails instead of sending                        |
+| `EMAIL_DRY_RUN`       | dry-run unless SMTP set | `1` forces log-instead-of-send; set `0` to send real email once `SMTP_HOST` is configured |
 | `SMTP_HOST` / `PORT` / `USER` / `PASS` / `FROM_EMAIL` | *(unset)* | Real email delivery |
+| `RUN_SCHEDULER`       | `0`                | Set `1` to run the delivery scheduler inside the web process (single-service hosts like Render's free tier) |
 | `ADMIN_TOKEN`         | *(unset)*          | If set, subscription **management** routes require `X-Admin-Token` |
 | `DB_PATH`             | `subscriptions.db` | SQLite location (shared by API + worker in Docker)   |
 | `SCHED_POLL_INTERVAL` | `60`               | Worker poll interval, seconds                        |

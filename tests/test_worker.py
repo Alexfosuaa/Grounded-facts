@@ -91,3 +91,25 @@ def test_format_email_lists_each_source(temp_db):
     body = worker.format_email("Topic", facts)
     assert "Alpha" in body
     assert "Beta" in body
+
+
+def test_run_forever_stops_on_event(monkeypatch):
+    # The embedded scheduler (used by the API lifespan) must run a delivery pass
+    # and then exit promptly when its stop_event is set, so shutting the web
+    # service down doesn't leak a thread or hang.
+    import threading
+
+    stop = threading.Event()
+    calls = {"n": 0}
+
+    def fake_run_once(now=None):
+        calls["n"] += 1
+        stop.set()  # ask the loop to stop after this single pass
+        return {"processed": 0}
+
+    monkeypatch.setattr(worker.db, "init_db", lambda: None)
+    monkeypatch.setattr(worker, "run_once", fake_run_once)
+
+    worker.run_forever(poll_interval=0, stop_event=stop)
+
+    assert calls["n"] == 1

@@ -22,6 +22,7 @@ load_dotenv()
 
 import datetime
 import os
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List
@@ -34,6 +35,11 @@ from backend.rag import curator, fetcher
 from backend.rag.embeddings import get_default_embedder
 from backend.rag.vectorstore import VectorStore
 from backend.services import db, emailer, worker
+
+
+def _truthy(value: str | None) -> bool:
+    """Env-flag parsing shared by the scheduler toggle (matches emailer's rule)."""
+    return str(value).lower() in ("1", "true", "yes", "on")
 
 
 def _require_admin(x_admin_token: str | None = Header(default=None)) -> None:
@@ -83,7 +89,33 @@ def _resolve_custom_sources(source_url: str | None) -> list[dict] | None:
 async def lifespan(app: FastAPI):
     # Ensure the database schema exists before serving any request.
     db.init_db()
-    yield
+
+    # On a single-service host (e.g. Render's free tier) there's no separate
+    # worker process, so optionally run the delivery scheduler right here in a
+    # daemon thread. Gated by RUN_SCHEDULER so local dev and tests stay quiet
+    # unless they opt in. A new subscription is due immediately (next_send=now),
+    # so its first digest goes out on the next poll (<= SCHED_POLL_INTERVAL s).
+    stop_event = None
+    scheduler = None
+    if _truthy(os.getenv("RUN_SCHEDULER")):
+        stop_event = threading.Event()
+        poll = int(os.getenv("SCHED_POLL_INTERVAL", "60"))
+        scheduler = threading.Thread(
+            target=worker.run_forever,
+            kwargs={"poll_interval": poll, "stop_event": stop_event},
+            daemon=True,
+        )
+        scheduler.start()
+
+    try:
+        yield
+    finally:
+        # Ask the scheduler thread to stop and give it a moment to unwind so we
+        # don't leak a thread across reloads.
+        if stop_event is not None:
+            stop_event.set()
+        if scheduler is not None:
+            scheduler.join(timeout=5)
 
 
 app = FastAPI(title="Grounded Facts API", version="1.0.0", lifespan=lifespan)

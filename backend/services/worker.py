@@ -113,14 +113,26 @@ def run_once(now: Optional[datetime.datetime] = None) -> Dict:
     }
 
 
-def run_forever(poll_interval: int = 60) -> None:  # pragma: no cover - long running
+def run_forever(poll_interval: int = 60, stop_event=None) -> None:
+    """Poll for due subscriptions forever (or until ``stop_event`` is set).
+
+    ``stop_event`` (a ``threading.Event``) lets the API run this loop in a
+    background thread and shut it down cleanly on app exit; when it's ``None``
+    the loop runs indefinitely (the standalone ``python -m ...worker`` process).
+    """
     db.init_db()
     print(f"[worker] started; polling every {poll_interval}s")
-    while True:
+    while stop_event is None or not stop_event.is_set():
         summary = run_once()
         if summary["processed"]:
             print(f"[worker] {datetime.datetime.utcnow().isoformat()} {summary}")
-        time.sleep(poll_interval)
+        # Event.wait() returns True as soon as the event is set, so shutdown is
+        # immediate instead of waiting out the full poll interval.
+        if stop_event is not None:
+            if stop_event.wait(poll_interval):
+                break
+        else:
+            time.sleep(poll_interval)
 
 
 if __name__ == "__main__":  # pragma: no cover

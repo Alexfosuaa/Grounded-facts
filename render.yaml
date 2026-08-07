@@ -16,9 +16,32 @@ services:
     healthCheckPath: /api/health
     autoDeploy: true
     envVars:
-      # Log emails instead of sending (no SMTP account needed for the demo).
+      # --- Email delivery -------------------------------------------------
+      # 0 = send real email once SMTP is configured below. While SMTP_HOST is
+      # still blank the app auto-falls back to demo mode (logs instead of
+      # sends), so this never crashes an un-configured deploy.
       - key: EMAIL_DRY_RUN
+        value: "0"
+      # Run the digest delivery scheduler inside this single web service (there
+      # is no separate worker on the free plan). A new subscription is due
+      # immediately, so its first digest goes out within ~60s while the service
+      # is awake.
+      - key: RUN_SCHEDULER
         value: "1"
+      # SMTP credentials — set these in the Render dashboard (Environment tab).
+      # sync:false keeps the secrets out of git; leave blank to stay in demo
+      # mode. Example (Gmail): SMTP_HOST=smtp.gmail.com, SMTP_USER=you@gmail.com,
+      # SMTP_PASS=<16-char app password>, FROM_EMAIL=you@gmail.com.
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: FROM_EMAIL
+        sync: false
       # SQLite lives on the container's ephemeral filesystem; subscriptions reset
       # on redeploy/spin-down. Add a paid Render disk mounted at /data and set
       # DB_PATH=/data/subscriptions.db to persist them.
