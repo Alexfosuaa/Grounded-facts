@@ -162,6 +162,42 @@ def test_fetch_url_source_reads_public_page(monkeypatch):
     assert "Readable content here" in src["text"]
 
 
+def test_fetch_topic_sources_gathers_related_articles(monkeypatch):
+    # The digest gathers the primary article plus a few related ones so facts
+    # span multiple sources. The primary must come first; extras are deduped.
+    primary = {"title": "Photosynthesis", "url": "u1", "text": "primary"}
+    monkeypatch.setattr(fetcher, "fetch_sources", lambda topic, title=None: [primary])
+    monkeypatch.setattr(
+        fetcher,
+        "_retry",
+        lambda fn, *a, **k: ["Photosynthesis", "Chloroplast", "Chlorophyll"],
+    )
+    pages = {
+        "Chloroplast": {"title": "Chloroplast", "url": "u2", "text": "c"},
+        "Chlorophyll": {"title": "Chlorophyll", "url": "u3", "text": "g"},
+    }
+    monkeypatch.setattr(fetcher, "_fetch_page", lambda t, **k: pages.get(t))
+
+    out = fetcher.fetch_topic_sources("Photosynthesis", max_articles=3)
+    titles = [s["title"] for s in out]
+    assert titles[0] == "Photosynthesis"  # primary anchors the result
+    assert titles == ["Photosynthesis", "Chloroplast", "Chlorophyll"]
+    assert len(titles) == len(set(titles))  # deduped (no repeat of the primary)
+
+
+def test_fetch_topic_sources_respects_max_articles(monkeypatch):
+    primary = {"title": "A", "url": "u", "text": "t"}
+    monkeypatch.setattr(fetcher, "fetch_sources", lambda topic, title=None: [primary])
+    # If the primary already meets the cap, no extra search is needed.
+    monkeypatch.setattr(
+        fetcher,
+        "_retry",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not search")),
+    )
+    out = fetcher.fetch_topic_sources("A", max_articles=1)
+    assert [s["title"] for s in out] == ["A"]
+
+
 def test_is_safe_public_url_rejects_ambiguous():
     # Parser/client disagreements that enable SSRF bypasses must be rejected up
     # front, regardless of the (public-looking) host they appear to point at.

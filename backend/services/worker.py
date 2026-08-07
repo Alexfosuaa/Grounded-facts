@@ -60,7 +60,11 @@ def process_subscription(sub: Dict, now: Optional[datetime.datetime] = None) -> 
         return {"id": sub["id"], "topic": topic, "status": "skipped", "sent": 0}
 
     try:
-        facts = curator.curate_facts(topic, max_facts=3)
+        # Curate across several related articles so the digest draws on multiple
+        # sources rather than a single page.
+        facts = curator.curate_facts(
+            topic, max_facts=3, max_sources=curator.DIGEST_MAX_SOURCES
+        )
         kept, embeddings = dedup.filter_new_facts(sub["id"], facts)
 
         if not kept:

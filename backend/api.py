@@ -270,12 +270,19 @@ def digest(topic: str, max_facts: int = 3, title: str | None = None) -> DigestRe
     effects (unlike a real delivery pass, it does not mark facts as sent).
 
     This lets the UI show subscribers exactly what their digest looks like even
-    in demo/dry-run mode, where email is logged rather than delivered.
+    in demo/dry-run mode, where email is logged rather than delivered. The digest
+    curates on the subscriber's behalf across several related articles (see
+    ``curator.DIGEST_MAX_SOURCES``) so facts aren't confined to a single page.
     """
     if not topic.strip():
         raise HTTPException(status_code=400, detail="topic is required")
     max_facts = max(1, min(max_facts, 50))
-    facts = curator.curate_facts(topic, max_facts=max_facts, title=title)
+    facts = curator.curate_facts(
+        topic,
+        max_facts=max_facts,
+        title=title,
+        max_sources=curator.DIGEST_MAX_SOURCES,
+    )
     subject = f"Your facts about {topic}"
     body = worker.format_email(topic, facts) if facts else "No new facts right now."
     return DigestResponse(

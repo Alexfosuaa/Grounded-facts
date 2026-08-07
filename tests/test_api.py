@@ -73,6 +73,30 @@ def test_digest_requires_topic(temp_db):
         assert r.status_code == 400
 
 
+def test_digest_uses_multiple_sources(temp_db, monkeypatch):
+    # The digest curates on the subscriber's behalf across several sources, so it
+    # must ask curate_facts for more than one article (max_sources > 1).
+    captured = {}
+
+    def fake_curate(topic, **kwargs):
+        captured.update(kwargs)
+        return [
+            {
+                "fact": "A grounded fact.",
+                "source_title": "Src",
+                "source_url": "http://x",
+                "grounding_score": 0.5,
+                "method": "extractive",
+            }
+        ]
+
+    monkeypatch.setattr(curator, "curate_facts", fake_curate)
+    with _client(temp_db) as client:
+        r = client.get("/api/digest", params={"topic": "Physics"})
+        assert r.status_code == 200
+        assert captured.get("max_sources", 1) > 1
+
+
 def test_ask_answers(temp_db, monkeypatch):
     # The ask endpoint returns a grounded answer with citations. We stub the
     # curator so the test stays offline and deterministic.

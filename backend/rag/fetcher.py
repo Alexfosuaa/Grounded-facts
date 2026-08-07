@@ -484,3 +484,43 @@ def fetch_qa_sources(question: str, max_articles: int = 3) -> List[Dict]:
             seen.add(page["title"])
             sources.append(page)
     return sources
+
+
+def fetch_topic_sources(
+    topic: str, max_articles: int = 3, title: Optional[str] = None
+) -> List[Dict]:
+    """Fetch several related articles about ``topic`` as grounding sources.
+
+    A digest curates on the subscriber's behalf, so rather than a single page it
+    gathers the primary article plus a few closely related ones — giving facts
+    that span multiple sources instead of one. The primary article is always
+    first so the lead/definition still anchors the result. Returns
+    ``[{title, url, text}]`` deduped by title; an empty list makes the caller
+    behave as if there were no facts (rather than guessing).
+    """
+    # The primary, coherent article (honors an explicit disambiguation choice).
+    sources = fetch_sources(topic, title=title)
+    seen = {s["title"] for s in sources}
+    if len(sources) >= max_articles:
+        return sources
+
+    # Broaden with the next-best search hits so the digest isn't confined to one
+    # page. Deduped against the primary article and against each other.
+    try:
+        titles = _retry(wikipedia.search, topic, results=max_articles + 3)
+    except Exception:
+        titles = []
+    for cand in titles:
+        if len(sources) >= max_articles:
+            break
+        # Skip parenthetical-disambiguated titles ("Volcano (1997 film)"): these
+        # are namesakes from a different sense, not the subject the subscriber
+        # follows. Keeping only clean titles keeps the digest on one coherent
+        # sense while still spanning several related articles.
+        if "(" in cand:
+            continue
+        page = _fetch_page(cand, max_chars=_PRIMARY_CHARS)
+        if page and page["title"] not in seen:
+            seen.add(page["title"])
+            sources.append(page)
+    return sources

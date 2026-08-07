@@ -171,6 +171,66 @@ def test_answer_question_abstain_includes_empty_alternatives(embedder, sample_so
     assert res["alternatives"] == []
 
 
+def test_curate_facts_multi_source_spans_articles(embedder, monkeypatch):
+    # The digest curates across several related articles (multiple sources). With
+    # max_sources > 1 and no injected sources, curate_facts should pull them via
+    # fetch_topic_sources and ground facts drawn from more than one article.
+    from backend.rag import fetcher
+
+    multi = [
+        {
+            "title": "Photosynthesis",
+            "url": "https://en.wikipedia.org/wiki/Photosynthesis",
+            "text": (
+                "Photosynthesis converts light energy into chemical energy in "
+                "plants. It releases oxygen as a byproduct that most life depends on."
+            ),
+        },
+        {
+            "title": "Chloroplast",
+            "url": "https://en.wikipedia.org/wiki/Chloroplast",
+            "text": (
+                "A chloroplast is the organelle where photosynthesis takes place "
+                "inside plant cells. Chloroplasts contain the green pigment chlorophyll."
+            ),
+        },
+    ]
+    captured = {}
+
+    def fake_topic_sources(topic, max_articles=3, title=None):
+        captured["max_articles"] = max_articles
+        return multi
+
+    monkeypatch.setattr(fetcher, "fetch_topic_sources", fake_topic_sources)
+
+    facts = curator.curate_facts(
+        "Photosynthesis", max_facts=5, max_sources=3, embedder=embedder
+    )
+    assert captured["max_articles"] == 3
+    assert facts
+    titles = {f["source_title"] for f in facts}
+    # Every fact comes from one of the injected sources, and the second article
+    # genuinely contributes — i.e. the digest spans multiple sources.
+    assert titles.issubset({"Photosynthesis", "Chloroplast"})
+    assert len(titles) >= 2
+
+
+def test_curate_facts_single_source_by_default(embedder, monkeypatch):
+    # Interactive lookups (max_sources default 1) must NOT fan out to multiple
+    # articles — that path stays single-article for tight coherence.
+    from backend.rag import fetcher
+
+    called = {"n": 0}
+
+    def boom(*a, **k):
+        called["n"] += 1
+        return []
+
+    monkeypatch.setattr(fetcher, "fetch_topic_sources", boom)
+    curator.curate_facts("Photosynthesis", max_facts=3, sources=None, embedder=embedder)
+    assert called["n"] == 0
+
+
 def test_extractive_facts_are_coherent(embedder):
     # A source mixing a clean fact with dangling/opinion noise; only the clean,
     # self-contained sentence should survive into the candidates.

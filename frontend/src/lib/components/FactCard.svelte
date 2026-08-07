@@ -50,7 +50,11 @@
         tipTitle="What grounding means"
         text="Grounding score = how closely this sentence matches the retrieved source evidence (cosine similarity, 0–1). Higher means the source supports it more directly. Anything below the guard threshold is dropped as a possible hallucination."
       />
-      <InfoChip label={fact.method} tipTitle="How this fact was produced" text={methodTip} />
+      <InfoChip
+        label={fact.method === "llm" ? "AI-written" : "extractive"}
+        tipTitle="How this fact was produced"
+        text={methodTip}
+      />
       <span class="fact-src">
         <svg class="fact-src-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H11v16H5.5A1.5 1.5 0 0 1 4 18.5z" />

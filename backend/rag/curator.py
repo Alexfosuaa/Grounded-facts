@@ -36,6 +36,10 @@ DEFAULT_K = 6
 # the one its subject names (e.g. "who helped Ghana gain independence?" is
 # answered in "Kwame Nkrumah", not "Ghana").
 QA_MAX_ARTICLES = 4
+# A digest curates on the subscriber's behalf across several related articles
+# (multiple sources) rather than one page, so a topic's facts draw on more than a
+# single source. Interactive "Explore" stays single-article for tight coherence.
+DIGEST_MAX_SOURCES = 3
 # Negation cues used to demote answers like "does not produce oxygen" when the
 # question itself is affirmative (extractive QA can't tell polarity otherwise).
 _NEGATION_RE = re.compile(
@@ -199,20 +203,34 @@ def curate_facts(
     embedder: Optional[Embedder] = None,
     min_grounding: Optional[float] = None,
     title: Optional[str] = None,
+    max_sources: int = 1,
 ) -> List[Dict]:
     """Return up to ``max_facts`` grounded, cited facts about ``topic``.
 
     Each fact dict contains: ``fact``, ``source_title``, ``source_url``,
     ``grounding_score`` and ``method`` ("llm" or "extractive"). ``title`` pins a
     specific Wikipedia page chosen via disambiguation.
+
+    ``max_sources`` > 1 curates across several related articles (used by the
+    digest) so facts span multiple sources; the default (1) grounds on one
+    coherent article, which keeps interactive lookups tightly on-topic.
     """
     embedder = embedder or get_default_embedder()
     threshold = _grounding_threshold() if min_grounding is None else min_grounding
+
+    # Curate across several related articles when asked (the digest), so the
+    # result draws on multiple sources rather than a single page. Only when the
+    # caller didn't inject their own sources or pin a specific article.
+    if sources is None and title is None and max_sources > 1:
+        sources = fetcher.fetch_topic_sources(topic, max_articles=max_sources) or None
 
     # Retrieve enough chunks to actually satisfy larger requests: each chunk
     # yields only a few coherent sentences after filtering, so scale k with the
     # number of facts asked for (retrieve() caps k at the corpus size).
     k = max(k, max_facts * 2)
+    # With multiple sources, widen retrieval so every article can contribute.
+    if sources:
+        k = max(k, DEFAULT_K * len(sources))
 
     hits = retrieve(
         topic, k=k, sources=sources, embedder=embedder, title=title, include_lead=True
@@ -237,14 +255,37 @@ def curate_facts(
     # multi-fact result reads as a small story: definition first, then the
     # strongest supporting details, presented in the source's reading order.
     selected: List[Dict] = []
+    selected_ids: set[int] = set()
+
+    def _take(cand: Dict) -> None:
+        selected.append(cand)
+        selected_ids.add(id(cand))
+
     first_chunk = [c for c in deduped if c.get("_doc_order", 1_000_000) < 1000]
     if first_chunk and max_facts >= 1:
-        opener = min(first_chunk, key=lambda c: c["_doc_order"])
-        selected.append(opener)
-        rest = [c for c in deduped if c is not opener]
-    else:
-        rest = deduped
-    selected += rest[: max(0, max_facts - len(selected))]
+        _take(min(first_chunk, key=lambda c: c["_doc_order"]))
+
+    # ``deduped`` is ordered by grounding strength. When several sources were
+    # curated (the digest), first reserve the best still-unused fact from each
+    # *other* source so the result visibly spans multiple sources instead of
+    # collapsing onto whichever article grounded highest. For a single-source
+    # lookup (Explore) every fact shares one source, so this pass is a no-op and
+    # behaviour is unchanged.
+    used_sources = {c["source_url"] for c in selected}
+    for cand in deduped:
+        if len(selected) >= max_facts:
+            break
+        if id(cand) in selected_ids or cand["source_url"] in used_sources:
+            continue
+        _take(cand)
+        used_sources.add(cand["source_url"])
+
+    # Fill any remaining slots purely by grounding strength.
+    for cand in deduped:
+        if len(selected) >= max_facts:
+            break
+        if id(cand) not in selected_ids:
+            _take(cand)
 
     selected.sort(key=lambda c: c.get("_doc_order", 0))
     for fact in selected:

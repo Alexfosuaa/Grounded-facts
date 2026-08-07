@@ -35,7 +35,8 @@
   <div class="panel-head">
     <h2>Subscribe to a digest</h2>
     <p class="muted small">
-      Get fresh grounded facts delivered on a schedule. No account needed.
+      Get fresh grounded facts delivered on a schedule — curated for you across
+      several related sources. No account needed.
     </p>
   </div>
 
