@@ -82,6 +82,37 @@ is awake) the first digest lands in the inbox. If it doesn't, open the service
 **Logs**: a failed send prints `Error sending email: …` (auth/host problem),
 while `[EMAIL DRY-RUN] …` means SMTP isn't configured yet.
 
+### Troubleshooting: "sent 0 digests" or emails never arrive
+
+Two different things get confused here — one is normal, one is a real error:
+
+- **"Run delivery now" keeps saying `sent 0`.** This is usually *expected*. With
+  `RUN_SCHEDULER=1` the in-process scheduler polls every ~60s and delivers any
+  due subscription automatically, then advances its `next_send` by the cadence
+  (e.g. +1 day for `daily`). So a few seconds after you subscribe there is
+  nothing left "due", and the manual button correctly reports `processed: 0,
+  sent: 0`. The button only sends what is *currently due*; the scheduler has
+  usually already handled it. Dedup also prevents re-sending the same facts.
+
+- **Emails genuinely aren't arriving.** Trigger one pass and read the result:
+  `POST /api/run-due` returns a `results` array; a failed send now includes the
+  exact reason, e.g.
+  `{"status": "send_failed", "error": "SMTPAuthenticationError: (535, ...)"}`.
+  The same string is printed to the service **Logs** as `Error sending email: …`.
+  Common causes and fixes:
+
+  | Error contains | Cause | Fix |
+  | --- | --- | --- |
+  | `SMTPAuthenticationError` / `535` | Wrong Gmail **App Password**, 2-Step Verification not enabled, or the normal account password was used | Enable 2-Step Verification, generate a fresh 16-char **App password**, and set it as `SMTP_PASS` (no spaces) |
+  | `Authentication Required` / `530` | `SMTP_USER`/`SMTP_PASS` are blank (only `SMTP_HOST` was set) | Set all of `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, `FROM_EMAIL` |
+  | `getaddrinfo failed` / `Name or service not known` | Wrong `SMTP_HOST` | Use `smtp.gmail.com` (or your provider's host) |
+  | `ConnectionRefused` / timeout | Wrong `SMTP_PORT` or the host blocks 587 | Use `SMTP_PORT=587` (STARTTLS) |
+
+  After changing any SMTP env var, **Save Changes** and let Render redeploy. On
+  the free tier SQLite is ephemeral, so **re-subscribe** afterward — subscriptions
+  created before the redeploy are wiped. Then subscribe fresh and check the inbox
+  in ~60s (let the scheduler send it) rather than relying on the manual button.
+
 ---
 
 ## Option B — Any Docker host (Fly.io, Railway, a VM)
