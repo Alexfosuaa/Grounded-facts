@@ -252,9 +252,17 @@ docker compose up --build
 # API + UI on http://localhost:8000
 ```
 
-**Deploying publicly?** See [`DEPLOY.md`](./DEPLOY.md) — a `render.yaml` blueprint
-gives a one-click free deploy from GitHub, and the image runs on any Docker host
-(it honors `$PORT`).
+### Deploy publicly (permanent URL, any device)
+
+One click — Render builds the Dockerfile (compiling the frontend fresh, so every
+feature is included) and hosts the whole app on its free tier. Sign in with
+GitHub, then **Apply**:
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Alexfosuaa/Grounded-facts)
+
+See [`DEPLOY.md`](./DEPLOY.md) for the full walkthrough (and Fly.io / Railway /
+plain-Docker alternatives). The image runs on any Docker host unchanged because
+it binds the `$PORT` the host provides.
 
 ---
 

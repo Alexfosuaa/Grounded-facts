@@ -13,7 +13,12 @@ no API key, no model download, and a small enough image for a free 512 MB tier.
 ## Option A — Render (one-click, durable) ✅ recommended
 
 A [`render.yaml`](./render.yaml) blueprint is included, so a public URL is a few
-clicks away:
+clicks away. The button pre-loads this repo — just sign in with GitHub and click
+**Apply**:
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Alexfosuaa/Grounded-facts)
+
+Or do it manually:
 
 1. Push this repo to GitHub (already done).
 2. Go to <https://render.com> → **New ▸ Blueprint** and connect the repo.
