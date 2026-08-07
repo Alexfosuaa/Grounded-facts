@@ -1,0 +1,19 @@
+# Keep the Docker build context small and let the image rebuild these itself.
+.git/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# Frontend deps + build are recreated in the frontend build stage.
+frontend/node_modules/
+frontend/dist/
+
+# Local data + secrets must never enter the image.
+*.db
+.env
+
+# Cached Wikipedia articles (offline resilience)
+.wiki_cache/

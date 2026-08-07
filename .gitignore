@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+
+# Application data
+*.db
+subscriptions.db
+
+# Environment / secrets
+.env
+
+# Frontend build artifacts (node_modules and dist are ignored in frontend/.gitignore)
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Cached Wikipedia articles (offline resilience)
+.wiki_cache/
+
+# Local dev screenshot/CDP scratch dir (browser profiles, PNGs, throwaway scripts)
+.shot/

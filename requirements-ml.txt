@@ -1,0 +1,4 @@
+# Optional: real neural sentence embeddings.
+# Install and set EMBED_BACKEND=sbert to use these instead of the default
+# offline feature-hashing embedder.
+sentence-transformers>=2.2

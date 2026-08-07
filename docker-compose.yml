@@ -1,0 +1,34 @@
+# Two services that share one SQLite database on a named volume:
+#   * api    — serves the REST API and the Svelte frontend
+#   * worker — the delivery scheduler that sends due digests
+#
+# Both are built from the same image; the worker just overrides the command.
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_PATH=/data/subscriptions.db
+      - EMAIL_DRY_RUN=1
+      # Uncomment to enable grounded LLM generation instead of the offline fallback:
+      # - OPENAI_API_KEY=sk-...
+      # Optional: use a neural embedder (requires the `ml` extra in the image).
+      # - EMBED_BACKEND=sbert
+    volumes:
+      - facts-data:/data
+
+  worker:
+    build: .
+    command: python -m backend.services.worker
+    environment:
+      - DB_PATH=/data/subscriptions.db
+      - EMAIL_DRY_RUN=1
+      - SCHED_POLL_INTERVAL=60
+    volumes:
+      - facts-data:/data
+    depends_on:
+      - api
+
+volumes:
+  facts-data:
