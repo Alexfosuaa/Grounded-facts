@@ -3,6 +3,7 @@
   import { api } from "../api.js";
   import FactCard from "./FactCard.svelte";
   import DidYouMean from "./DidYouMean.svelte";
+  import SourcePicker from "./SourcePicker.svelte";
   import { addHistory } from "../history.svelte.js";
   import { fly, fade } from "svelte/transition";
 
@@ -20,6 +21,7 @@
   // --- form state ---
   let topic = $state("Photosynthesis");
   let maxFacts = $state(3);
+  let sourceUrl = $state(""); // optional custom source; blank = Wikipedia (default)
 
   // Keep the requested fact count sane even if the number input is left blank
   // or pushed past the bounds (1–50). The article's length naturally limits the
@@ -79,6 +81,12 @@
     const forTopic = topic;
 
     try {
+      // A custom source bypasses Wikipedia entirely, so disambiguation (a
+      // Wikipedia-only concept) doesn't apply — ground on the given page.
+      if (sourceUrl.trim()) {
+        await runPreview(forTopic, "", myReq);
+        return;
+      }
       const dis = await api(`/disambiguate?topic=${encodeURIComponent(forTopic)}`);
       if (myReq !== reqSeq) return; // superseded by a newer lookup
       candidates = dis.candidates || [];
@@ -114,6 +122,8 @@
         max_facts: String(clampFacts(maxFacts)),
       });
       if (title) params.set("title", title);
+      const src = sourceUrl.trim();
+      if (src) params.set("source_url", src);
       const data = await api(`/preview?${params.toString()}`);
       if (myReq !== reqSeq) return; // a newer lookup is in flight — drop this one
       facts = data.facts || [];
@@ -302,6 +312,8 @@
       {/if}
     </button>
   </div>
+
+  <SourcePicker bind:url={sourceUrl} />
 
   <!-- Status + results below -->
 

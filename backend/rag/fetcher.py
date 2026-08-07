@@ -93,6 +93,7 @@ def _cache_write(data: Dict, key: Optional[str] = None) -> None:
     except Exception:
         pass
 
+
 # Wikipedia articles end with boilerplate sections ("See also", "References",
 # ...) that are navigation/citation noise rather than prose. We cut the article
 # at the first such heading so those lines never become "facts". This is
@@ -171,6 +172,125 @@ def fetch_candidates(topic: str, limit: int = 6) -> List[Dict]:
             description = ""
         candidates.append({"title": title, "description": description})
     return candidates
+
+
+# --- Custom (non-Wikipedia) sources ----------------------------------------
+# Users can ground on their own link instead of Wikipedia. We fetch the page,
+# strip boilerplate, and return the same {title, url, text} shape as a Wikipedia
+# source, so the rest of the pipeline (chunk -> embed -> retrieve -> guard) is
+# completely unchanged.
+
+_URL_FETCH_TIMEOUT = float(os.getenv("URL_FETCH_TIMEOUT", "10"))
+_URL_MAX_BYTES = 2_000_000  # cap the download so a huge page can't exhaust memory
+
+
+def _is_safe_public_url(url: str) -> bool:
+    """SSRF guard: allow only http(s) URLs whose host resolves to public IPs.
+
+    A user-supplied link is untrusted input. Without this check it could be used
+    to reach internal services (databases, cloud metadata endpoints at
+    169.254.169.254, localhost admin panels). We resolve the host and reject any
+    private, loopback, link-local, reserved, or multicast address.
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return False
+        for info in socket.getaddrinfo(parsed.hostname, None):
+            ip = ipaddress.ip_address(info[4][0])
+            if (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_reserved
+                or ip.is_multicast
+                or ip.is_unspecified
+            ):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def fetch_url_source(url: str, max_chars: int = _PRIMARY_CHARS) -> Optional[Dict]:
+    """Fetch an arbitrary web page as a grounding source ``{title, url, text}``.
+
+    Returns ``None`` when the URL is unsafe/unreachable or yields no readable
+    text. The extracted text is capped at ``max_chars`` to match the Wikipedia
+    path. Used when the user supplies their own source link instead of Wikipedia.
+    """
+    url = (url or "").strip()
+    if not _is_safe_public_url(url):
+        return None
+
+    try:
+        import requests
+
+        resp = requests.get(
+            url,
+            headers={"User-Agent": _USER_AGENT},
+            timeout=_URL_FETCH_TIMEOUT,
+            stream=True,
+        )
+        resp.raise_for_status()
+        # Bounded read so an enormous response can't exhaust memory.
+        chunks: List[bytes] = []
+        total = 0
+        for chunk in resp.iter_content(chunk_size=16384):
+            if not chunk:
+                continue
+            chunks.append(chunk)
+            total += len(chunk)
+            if total >= _URL_MAX_BYTES:
+                break
+        html = b"".join(chunks).decode(resp.encoding or "utf-8", errors="replace")
+    except Exception:
+        return None
+
+    return _extract_readable(html, url, max_chars)
+
+
+def _extract_readable(html: str, url: str, max_chars: int) -> Optional[Dict]:
+    """Strip boilerplate from HTML and return ``{title, url, text}`` or ``None``."""
+    try:
+        from bs4 import BeautifulSoup
+    except Exception:  # pragma: no cover - bs4 ships with the wikipedia dependency
+        return None
+
+    soup = BeautifulSoup(html, "html.parser")
+    # Remove non-content nodes so we ground on prose, not nav/scripts/styling.
+    for tag in soup(
+        [
+            "script",
+            "style",
+            "noscript",
+            "nav",
+            "header",
+            "footer",
+            "aside",
+            "form",
+            "svg",
+        ]
+    ):
+        tag.decompose()
+
+    title = ""
+    if soup.title and soup.title.string:
+        title = soup.title.string.strip()
+    if not title:
+        h1 = soup.find("h1")
+        title = h1.get_text(strip=True) if h1 else url
+
+    # Prefer the main article region when the page marks one up.
+    main = soup.find("article") or soup.find("main") or soup.body or soup
+    text = " ".join(main.get_text(separator=" ", strip=True).split())[:max_chars]
+    if not text.strip():
+        return None
+    return {"title": title[:200], "url": url, "text": text}
 
 
 def _fetch_page(title: str, max_chars: int) -> Optional[Dict]:
@@ -279,3 +399,32 @@ def fetch_sources(
     if summary.strip():
         return [{"title": topic, "url": _page_url(topic), "text": summary}]
     return []
+
+
+def fetch_qa_sources(question: str, max_articles: int = 3) -> List[Dict]:
+    """Fetch the top few candidate articles for a *question* as grounding sources.
+
+    Unlike :func:`fetch_sources` (which grounds facts on a single coherent
+    article about a topic), a question's answer often lives in a *different*
+    article than the one its subject names — e.g. "who helped Ghana gain
+    independence?" is answered in the **Kwame Nkrumah** article, not **Ghana**.
+    So for QA we retrieve across the top ``max_articles`` search hits and let the
+    sentence re-ranker pick the best-supported answer from whichever article
+    actually contains it.
+
+    Returns ``[{title, url, text}]`` (deduped by title); empty on total failure,
+    which makes the caller abstain rather than guess.
+    """
+    try:
+        titles = _retry(wikipedia.search, question, results=max_articles)
+    except Exception:
+        titles = []
+
+    sources: List[Dict] = []
+    seen: set[str] = set()
+    for title in titles[:max_articles]:
+        page = _fetch_page(title, max_chars=_PRIMARY_CHARS)
+        if page and page["title"] not in seen:
+            seen.add(page["title"])
+            sources.append(page)
+    return sources

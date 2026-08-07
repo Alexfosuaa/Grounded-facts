@@ -64,14 +64,24 @@ def process_subscription(sub: Dict, now: Optional[datetime.datetime] = None) -> 
         kept, embeddings = dedup.filter_new_facts(sub["id"], facts)
 
         if not kept:
-            return {"id": sub["id"], "topic": topic, "status": "no_new_facts", "sent": 0}
+            return {
+                "id": sub["id"],
+                "topic": topic,
+                "status": "no_new_facts",
+                "sent": 0,
+            }
 
         subject = f"Your facts about {topic}"
         body = format_email(topic, kept)
         if emailer.send_email(sub["email"], subject, body):
-            for fact, emb in zip(kept, embeddings):
+            for fact, emb in zip(kept, embeddings, strict=True):
                 db.add_sent_fact(sub["id"], fact["fact"], emb)
-            return {"id": sub["id"], "topic": topic, "status": "sent", "sent": len(kept)}
+            return {
+                "id": sub["id"],
+                "topic": topic,
+                "status": "sent",
+                "sent": len(kept),
+            }
 
         # Delivery failed. The row was already advanced by the claim, so it is
         # retried on the next cadence rather than immediately (at-most-once).

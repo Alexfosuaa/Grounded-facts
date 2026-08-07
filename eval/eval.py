@@ -178,7 +178,9 @@ def main() -> None:
 
         hit_rate = sum(outcomes) / len(outcomes) if outcomes else 0.0
         print(f"\nTopic: {corpus.topic}")
-        print(f"  retrieval hit-rate@{k} : {hit_rate:.0%} ({sum(outcomes)}/{len(outcomes)})")
+        print(
+            f"  retrieval hit-rate@{k} : {hit_rate:.0%} ({sum(outcomes)}/{len(outcomes)})"
+        )
         print(f"  supported grounding    : {[round(s, 3) for s in sup]}")
         print(f"  unsupported grounding  : {[round(s, 3) for s in uns]}")
 

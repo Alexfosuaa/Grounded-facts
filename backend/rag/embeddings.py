@@ -10,7 +10,10 @@ Design goals
 
 Backends
 --------
-* ``hashing`` (default): a deterministic, NumPy-only *feature hashing* embedder
+* ``auto`` (default): pick ``sbert`` when sentence-transformers is installed and
+  loads cleanly, else fall back to ``hashing``. Installing the optional ``ml``
+  extra therefore upgrades retrieval quality with no configuration change.
+* ``hashing``: a deterministic, NumPy-only *feature hashing* embedder
   (a.k.a. the "hashing trick"). It maps word unigrams and bigrams into a fixed
   dimensional space with signed hashing to limit collisions. It is not as strong
   as a neural encoder, but it is a legitimate IR technique, is fully offline, and
@@ -48,25 +51,48 @@ def _stable_hash(token: str) -> int:
     return int(hashlib.md5(token.encode("utf-8")).hexdigest(), 16)
 
 
+def _sbert_available() -> bool:
+    """True when the optional sentence-transformers backend can be imported."""
+    import importlib.util
+
+    return importlib.util.find_spec("sentence_transformers") is not None
+
+
 class Embedder:
     """Uniform embedding interface across backends.
 
     Parameters
     ----------
     backend:
-        One of ``hashing``, ``sbert``, ``openai``. Defaults to the ``EMBED_BACKEND``
-        environment variable, or ``hashing`` when unset.
+        One of ``auto``, ``hashing``, ``sbert``, ``openai``. Defaults to the
+        ``EMBED_BACKEND`` environment variable, or ``auto`` when unset.
     dim:
         Dimensionality for the hashing backend (ignored by neural backends, which
         have a fixed native dimension).
     """
 
     def __init__(self, backend: str | None = None, dim: int = DEFAULT_HASHING_DIM):
-        self.backend = (backend or os.getenv("EMBED_BACKEND", "hashing")).lower()
+        requested = (backend or os.getenv("EMBED_BACKEND", "auto")).lower()
         self._hashing_dim = dim
         self._sbert_model = None
         self._openai_client = None
 
+        # "auto" (the default) prefers the neural sbert encoder when it is both
+        # installed and able to load, otherwise falls back to the always-available
+        # offline hashing embedder — so installing the optional `ml` extra
+        # upgrades retrieval quality with no configuration change.
+        if requested == "auto":
+            if _sbert_available():
+                try:
+                    self._init_sbert()
+                    self.backend = "sbert"
+                    return
+                except Exception:
+                    self._sbert_model = None  # download/load failed -> fall back
+            self.backend = "hashing"
+            return
+
+        self.backend = requested
         if self.backend == "sbert":
             self._init_sbert()
         elif self.backend == "openai":
@@ -80,7 +106,13 @@ class Embedder:
 
         model_name = os.getenv("SBERT_MODEL", "all-MiniLM-L6-v2")
         self._sbert_model = SentenceTransformer(model_name)
-        self._dim = int(self._sbert_model.get_sentence_embedding_dimension())
+        # Newer sentence-transformers renamed this method; support both names.
+        get_dim = getattr(
+            self._sbert_model,
+            "get_embedding_dimension",
+            self._sbert_model.get_sentence_embedding_dimension,
+        )
+        self._dim = int(get_dim())
 
     def _init_openai(self) -> None:
         from openai import OpenAI  # type: ignore
@@ -138,8 +170,8 @@ class Embedder:
 
         features = list(tokens)
         features.extend(
-            f"{a}_{b}" for a, b in zip(tokens, tokens[1:])
-        )  # add bigrams for a little word-order signal
+            f"{a}_{b}" for a, b in zip(tokens, tokens[1:], strict=False)
+        )  # add bigrams for a little word-order signal (lengths differ by one)
 
         for feature in features:
             h = _stable_hash(feature)

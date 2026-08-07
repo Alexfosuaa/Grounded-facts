@@ -93,12 +93,12 @@ class VectorStore:
             scores, idxs = self._index.search(query, k)
             scores, idxs = scores[0], idxs[0]
         else:
-            sims = (self._vectors @ query[0])
+            sims = self._vectors @ query[0]
             idxs = np.argsort(-sims)[:k]
             scores = sims[idxs]
 
         results: List[Tuple[float, Dict]] = []
-        for score, idx in zip(scores, idxs):
+        for score, idx in zip(scores, idxs, strict=True):
             if idx < 0:
                 continue
             results.append((float(score), self.metadatas[int(idx)]))

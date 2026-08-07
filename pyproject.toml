@@ -12,6 +12,8 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "numpy>=1.26",
     "wikipedia==1.4.0",
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
     "python-dotenv>=1.0",
     "email-validator>=2.0",
     "faiss-cpu>=1.8",
@@ -20,7 +22,28 @@ dependencies = [
 
 [project.optional-dependencies]
 ml = ["sentence-transformers>=2.2"]
-dev = ["pytest>=8", "httpx>=0.27"]
+dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.6"]
 
 [tool.setuptools]
 packages = ["backend", "backend.rag", "backend.services"]
+
+[tool.ruff]
+# Match the existing Black-style formatting (88 cols) so `ruff format` is a
+# no-op on the current code and CI's format check stays green.
+line-length = 88
+target-version = "py310"
+exclude = [".venv", "frontend", "dist", "build"]
+
+[tool.ruff.lint]
+# A pragmatic set: pyflakes (F), pycodestyle errors/warnings (E/W), isort (I),
+# and a few bug-catching flake8-bugbear rules (B). E501 is handled by the
+# formatter, so we don't fail the build on long lines.
+select = ["E", "W", "F", "I", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# These modules must call load_dotenv() before importing config-reading modules,
+# so their imports legitimately sit below executable code (E402).
+"backend/api.py" = ["E402"]
+"backend/services/worker.py" = ["E402"]
+"tests/conftest.py" = ["E402"]

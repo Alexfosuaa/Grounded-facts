@@ -119,6 +119,58 @@ def test_answer_question_abstains_below_threshold(embedder, sample_sources):
     assert res["answer"] is None
 
 
+def test_answer_question_returns_alternatives(embedder):
+    # Several distinct, coherent sentences that all answer the question should
+    # produce a primary answer plus ranked "try another answer" alternatives.
+    # (min_grounding forced low so every candidate qualifies with the noisy
+    # hashing fixture — we're testing the alternatives plumbing, not scores.)
+    sources = [
+        {
+            "title": "Photosynthesis",
+            "url": "",
+            "text": (
+                "Photosynthesis produces oxygen for the atmosphere around us. "
+                "Photosynthesis produces glucose that feeds the growing plant. "
+                "Photosynthesis produces chemical energy stored inside sugars."
+            ),
+        }
+    ]
+    res = curator.answer_question(
+        "What does photosynthesis produce?",
+        sources=sources,
+        title="Photosynthesis",
+        embedder=embedder,
+        min_grounding=-1.0,
+    )
+    assert res["grounded"] is True
+    assert isinstance(res["alternatives"], list)
+    assert len(res["alternatives"]) >= 1
+
+    def _norm(s):
+        return " ".join(s.lower().split())
+
+    primary = _norm(res["answer"])
+    for alt in res["alternatives"]:
+        # Alternatives are genuinely different from the primary and each other.
+        assert _norm(alt["answer"]) != primary
+        assert alt["answer"]
+        assert "confidence" in alt
+
+
+def test_answer_question_abstain_includes_empty_alternatives(embedder, sample_sources):
+    # The abstain path must still carry an (empty) alternatives list so the API
+    # response shape is consistent whether or not an answer was found.
+    res = curator.answer_question(
+        "What does photosynthesis produce?",
+        sources=sample_sources,
+        title="Photosynthesis",
+        embedder=embedder,
+        min_grounding=0.99,
+    )
+    assert res["grounded"] is False
+    assert res["alternatives"] == []
+
+
 def test_extractive_facts_are_coherent(embedder):
     # A source mixing a clean fact with dangling/opinion noise; only the clean,
     # self-contained sentence should survive into the candidates.

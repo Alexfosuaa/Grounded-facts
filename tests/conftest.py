@@ -14,8 +14,8 @@ os.environ.pop("USE_LLM", None)
 # (or get served from) the real cache directory.
 os.environ["WIKI_CACHE_DIR"] = ""
 
-from backend.services import db  # noqa: E402
 from backend.rag.embeddings import Embedder  # noqa: E402
+from backend.services import db  # noqa: E402
 
 
 @pytest.fixture

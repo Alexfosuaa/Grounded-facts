@@ -3,7 +3,6 @@ import pytest
 
 from backend.rag.vectorstore import VectorStore
 
-
 DOCS = [
     "The Eiffel Tower is located in Paris, France.",
     "Photosynthesis occurs in the chloroplasts of plant cells.",

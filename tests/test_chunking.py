@@ -1,5 +1,6 @@
-from backend.rag.chunking import chunk_text, split_sentences
 import pytest
+
+from backend.rag.chunking import chunk_text, split_sentences
 
 
 def test_short_text_single_chunk():

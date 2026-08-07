@@ -31,22 +31,32 @@ from backend.rag.embeddings import Embedder, get_default_embedder
 
 DEFAULT_MAX_FACTS = 3
 DEFAULT_K = 6
+# For question answering we ground across the top few candidate articles, not
+# just one: a question's answer entity often lives in a *different* article than
+# the one its subject names (e.g. "who helped Ghana gain independence?" is
+# answered in "Kwame Nkrumah", not "Ghana").
+QA_MAX_ARTICLES = 4
 # Negation cues used to demote answers like "does not produce oxygen" when the
 # question itself is affirmative (extractive QA can't tell polarity otherwise).
 _NEGATION_RE = re.compile(
     r"\b(?:not|no|never|without|cannot|can't|don't|doesn't|didn't|isn't|"
     r"aren't|wasn't|weren't|nor|neither|none)\b"
 )
-# Minimum cosine similarity between a fact and its best supporting chunk. Tuned
-# for the offline hashing embedder; override with GROUNDING_THRESHOLD (neural
-# backends generally warrant a higher value, e.g. 0.35).
+# Minimum cosine similarity between a fact and its best supporting chunk.
+# The right bar depends on the embedding backend: the offline bag-of-words
+# hashing embedder produces low similarities (genuine matches ~0.2-0.4), while
+# neural encoders (sbert/openai) spread scores higher (genuine matches ~0.4-0.7,
+# unrelated ~0.1). We therefore pick the default from the active EMBED_BACKEND
+# and let GROUNDING_THRESHOLD override it explicitly.
 DEFAULT_GROUNDING_THRESHOLD = 0.20
+NEURAL_GROUNDING_THRESHOLD = 0.35
 
 # Question answering compares a whole question against individual sentences,
-# which share fewer exact tokens than a sentence does with its broad topic, so
-# the bag-of-words embedder scores genuine answers lower. QA therefore uses a
-# slightly lower bar than fact extraction; override with QA_GROUNDING_THRESHOLD.
+# which share fewer tokens than a sentence does with its broad topic, so genuine
+# answers score a little lower than facts. QA therefore uses a slightly lower bar
+# than fact extraction on each backend; override with QA_GROUNDING_THRESHOLD.
 DEFAULT_QA_THRESHOLD = 0.15
+NEURAL_QA_THRESHOLD = 0.30
 
 _HEADER_RE = re.compile(r"={2,}[^=\n]*={2,}")
 # Inline reference/footnote markers like "[1]" or "[citation needed]".
@@ -72,26 +82,53 @@ _OPINION_RE = re.compile(
 )
 
 
+def _is_neural_backend() -> bool:
+    """True when the active embedding backend is a neural encoder.
+
+    Reads ``EMBED_BACKEND`` directly for an explicit choice; for ``auto`` (the
+    default) it consults the process-wide embedder that was actually selected,
+    since ``auto`` resolves to ``sbert`` only when it is installed and loads.
+    Neural cosine similarities sit noticeably higher than the hashing embedder's,
+    so the grounding bars default higher to keep the hallucination guard strict.
+    """
+    backend = os.getenv("EMBED_BACKEND", "auto").lower()
+    if backend == "auto":
+        backend = get_default_embedder().backend
+    return backend in {"sbert", "openai"}
+
+
 def _grounding_threshold() -> float:
-    """Minimum grounding score, from GROUNDING_THRESHOLD env or the default."""
+    """Minimum grounding score, from GROUNDING_THRESHOLD env or a backend default."""
+    default = (
+        NEURAL_GROUNDING_THRESHOLD
+        if _is_neural_backend()
+        else DEFAULT_GROUNDING_THRESHOLD
+    )
+    raw = os.getenv("GROUNDING_THRESHOLD")
+    if raw is None:
+        return default
     try:
-        return float(os.getenv("GROUNDING_THRESHOLD", DEFAULT_GROUNDING_THRESHOLD))
+        return float(raw)
     except ValueError:
-        return DEFAULT_GROUNDING_THRESHOLD
+        return default
 
 
 def _qa_threshold() -> float:
     """Minimum grounding score for question answering.
 
     Lower than :func:`_grounding_threshold` because QA matches a full question
-    against individual sentences (sparser lexical overlap for a bag-of-words
-    embedder) rather than a sentence against a broad topic. Override with the
+    against individual sentences (sparser overlap) rather than a sentence against
+    a broad topic. Defaults scale with the embedding backend; override with the
     QA_GROUNDING_THRESHOLD env var.
     """
+    default = NEURAL_QA_THRESHOLD if _is_neural_backend() else DEFAULT_QA_THRESHOLD
+    raw = os.getenv("QA_GROUNDING_THRESHOLD")
+    if raw is None:
+        return default
     try:
-        return float(os.getenv("QA_GROUNDING_THRESHOLD", DEFAULT_QA_THRESHOLD))
+        return float(raw)
     except ValueError:
-        return DEFAULT_QA_THRESHOLD
+        return default
 
 
 def _llm_enabled() -> bool:
@@ -112,9 +149,11 @@ def retrieve(
 ) -> List[Dict]:
     """Return the top-``k`` retrieved chunks as ``{score, text, source_*}`` dicts.
 
-    When ``include_lead`` is set, the article's opening chunk (``order == 0``, the
-    Wikipedia lead/definition) is guaranteed to be present even if it didn't rank
-    in the top-``k`` — so results can open with a proper definition.
+    When ``include_lead`` is set, the opening chunk (``order == 0``, the
+    Wikipedia lead/definition) of *every* grounded article is guaranteed to be
+    present even if it didn't rank in the top-``k`` — so results can open with a
+    proper definition and, for multi-article QA, the answer entity's own lead
+    (which often names it directly) is always in play.
     """
     embedder = embedder or get_default_embedder()
     store = ingest.get_index(topic, sources=sources, embedder=embedder, title=title)
@@ -133,8 +172,11 @@ def retrieve(
         for score, meta in hits
     ]
     if include_lead:
-        lead = next((m for m in store.metadatas if m.get("order") == 0), None)
-        if lead is not None and not any(r["text"] == lead["text"] for r in results):
+        # Force in the lead chunk of each distinct article, not just the first.
+        leads = [m for m in store.metadatas if m.get("order") == 0]
+        for lead in leads:
+            if any(r["text"] == lead["text"] for r in results):
+                continue
             lead_score = float(embedder.embed_one(lead["text"]) @ query_vec)
             results.append(
                 {
@@ -282,6 +324,7 @@ def answer_question(
         "source_title": "",
         "source_url": "",
         "citations": [],
+        "alternatives": [],
     }
     q = question.strip()
     if not q:
@@ -289,20 +332,29 @@ def answer_question(
 
     # Figure out which article the question is about. Wikipedia search maps a
     # natural-language question to its most relevant page well; skip this when
-    # the caller pinned a title or supplied their own sources.
+    # Figure out which article(s) the question is about. A question's answer
+    # often lives in a *different* article than the one its subject names, so we
+    # ground across the top few candidates and let the sentence re-ranker pick
+    # the best-supported answer from whichever article actually contains it.
+    # Skip this when the caller pinned a title or supplied their own sources.
     resolved_title = title
-    if resolved_title is None and sources is None:
+    if title is None and sources is None:
         try:
-            cands = fetcher.fetch_candidates(q, limit=1)
+            fetched = fetcher.fetch_qa_sources(q, max_articles=QA_MAX_ARTICLES)
         except Exception:
-            cands = []
-        resolved_title = cands[0]["title"] if cands else None
+            fetched = None
+        # Coerce an empty result to None so retrieval falls back to a Wikipedia
+        # lookup of the raw question, instead of grounding on an empty index
+        # (which build_index treats as "no text" and would force an abstain).
+        sources = fetched or None
 
     topic = resolved_title or q
+    # Retrieve enough chunks that each grounded article can contribute evidence.
+    n_articles = len(sources) if sources else 1
     hits = retrieve(
         topic,
         query=q,
-        k=max(k, DEFAULT_K),
+        k=max(k, DEFAULT_K * n_articles),
         sources=sources,
         embedder=embedder,
         title=resolved_title,
@@ -341,16 +393,20 @@ def answer_question(
     candidate_idx = list(range(len(sentences)))
     if q_is_affirmative:
         affirmative = [
-            i for i in candidate_idx
+            i
+            for i in candidate_idx
             if not _NEGATION_RE.search(sentences[i]["text"].lower())
         ]
         if affirmative:
             candidate_idx = affirmative
 
-    # Pick the closest remaining sentence. Because we choose by raw similarity,
-    # the reported confidence is exactly that sentence's score — so a grounded
-    # answer always has confidence >= threshold (no inflated/borrowed score).
-    best_i = max(candidate_idx, key=lambda i: float(sims[i]))
+    # Rank the remaining candidates by similarity (descending). The top sentence
+    # becomes the answer; the rest become "try another answer" alternatives.
+    # Choosing by raw similarity means the reported confidence is exactly that
+    # sentence's score, so a grounded answer always has confidence >= threshold
+    # (no inflated or borrowed score).
+    ranked = sorted(candidate_idx, key=lambda i: float(sims[i]), reverse=True)
+    best_i = ranked[0]
     best_score = float(sims[best_i])
 
     if best_score < threshold:
@@ -363,13 +419,46 @@ def answer_question(
             "source_title": hits[0]["source_title"],
             "source_url": hits[0]["source_url"],
             "citations": citations,
+            "alternatives": [],
         }
 
+    # Keep each answer to a single retrieved sentence: fully grounded and
+    # attributable to one source, clearer and safer than stitching sentences.
     primary = sentences[best_i]["hit"]
-    # Return the single best-matching sentence. Keeping the answer to one
-    # retrieved sentence guarantees it is fully grounded and attributable to a
-    # single source — clearer and safer than stitching sentences together.
     answer_text = sentences[best_i]["text"]
+
+    # Gather distinct, above-threshold runners-up so the UI can offer a
+    # "try another answer" control without a second request. We return *every*
+    # distinct answer that clears the grounding threshold — no fixed cap — so the
+    # count honestly reflects how much grounded evidence the sources contain
+    # (naturally bounded by how many chunks we retrieved). Near-duplicates (one
+    # sentence wholly contained in another) are skipped so alternatives read as
+    # genuinely different answers.
+    def _norm(text: str) -> str:
+        # Drop punctuation for comparison so "…politician." and "…politician!"
+        # count as the same answer rather than two near-identical alternatives.
+        return " ".join(re.sub(r"[^\w\s]", "", text.lower()).split())
+
+    chosen = [_norm(answer_text)]
+    alternatives: List[Dict] = []
+    for i in ranked[1:]:
+        score = float(sims[i])
+        if score < threshold:
+            break  # ranked is descending: nothing further can qualify
+        text = sentences[i]["text"]
+        norm = _norm(text)
+        if any(norm in c or c in norm for c in chosen):
+            continue
+        hit = sentences[i]["hit"]
+        alternatives.append(
+            {
+                "answer": text,
+                "confidence": round(score, 4),
+                "source_title": hit["source_title"],
+                "source_url": hit["source_url"],
+            }
+        )
+        chosen.append(norm)
 
     # Build citations *after* choosing the answer so the shown evidence always
     # includes the chunk the answer actually came from.
@@ -382,6 +471,7 @@ def answer_question(
         "source_title": primary["source_title"],
         "source_url": primary["source_url"],
         "citations": citations,
+        "alternatives": alternatives,
     }
 
 
@@ -407,7 +497,7 @@ def _is_coherent_fact(sentence: str) -> bool:
         return False
     if not sentence[0].isupper():
         return False  # likely a mid-sentence fragment
-    if sentence[-1] not in ".!?\"”’)":
+    if sentence[-1] not in '.!?"”’)':
         return False  # truncated at a chunk boundary — not a whole sentence
     if _DANGLING_START_RE.match(sentence):
         return False
@@ -558,7 +648,7 @@ def _apply_guard(
     fact_vecs = embedder.embed([c["fact"] for c in candidates])
 
     kept: List[Dict] = []
-    for cand, fv in zip(candidates, fact_vecs):
+    for cand, fv in zip(candidates, fact_vecs, strict=True):
         sims = evidence @ fv
         best = int(np.argmax(sims))
         grounding = float(sims[best])
@@ -583,7 +673,7 @@ def _apply_guard(
 def _norm_for_dedup(text: str) -> str:
     """Lowercase + strip trailing punctuation so containment checks compare the
     substance of two sentences, not their casing or final period."""
-    return text.lower().strip().rstrip(".!?\"”’) ")
+    return text.lower().strip().rstrip('.!?"”’) ')
 
 
 def _dedupe_candidates(

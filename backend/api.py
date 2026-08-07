@@ -58,6 +58,27 @@ def _mask_email(email: str) -> str:
     return f"{shown}***@{domain}"
 
 
+def _resolve_custom_sources(source_url: str | None) -> list[dict] | None:
+    """Turn an optional user-supplied URL into injected grounding sources.
+
+    Returns ``None`` when no URL is given, so callers fall back to the default
+    Wikipedia path. When a URL *is* given but can't be fetched safely, we raise
+    400 rather than silently falling back — the user asked for that source.
+    """
+    if not source_url or not source_url.strip():
+        return None
+    src = fetcher.fetch_url_source(source_url.strip())
+    if not src:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Could not read that source URL. Use a public http(s) article "
+                "link, or leave it blank to use Wikipedia."
+            ),
+        )
+    return [src]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Ensure the database schema exists before serving any request.
@@ -141,6 +162,15 @@ class Citation(BaseModel):
     score: float
 
 
+class AnswerAlternative(BaseModel):
+    """A runner-up answer sentence surfaced by the "try another answer" control."""
+
+    answer: str
+    confidence: float
+    source_title: str
+    source_url: str
+
+
 class AnswerResponse(BaseModel):
     question: str
     answer: str | None
@@ -149,6 +179,7 @@ class AnswerResponse(BaseModel):
     source_title: str
     source_url: str
     citations: List[Citation]
+    alternatives: List[AnswerAlternative] = []
 
 
 class InfoResponse(BaseModel):
@@ -203,12 +234,24 @@ def disambiguate(topic: str, limit: int = 6) -> DisambiguateResponse:
 
 
 @router.get("/preview", response_model=PreviewResponse)
-def preview(topic: str, max_facts: int = 3, title: str | None = None) -> PreviewResponse:
-    """Curate grounded facts for a topic (``title`` pins a disambiguated page)."""
+def preview(
+    topic: str,
+    max_facts: int = 3,
+    title: str | None = None,
+    source_url: str | None = None,
+) -> PreviewResponse:
+    """Curate grounded facts for a topic (``title`` pins a disambiguated page).
+
+    When ``source_url`` is supplied the facts are grounded on that page instead
+    of Wikipedia; otherwise Wikipedia is used (the default).
+    """
     if not topic.strip():
         raise HTTPException(status_code=400, detail="topic is required")
     max_facts = max(1, min(max_facts, 50))  # clamp to a sane range
-    facts = curator.curate_facts(topic, max_facts=max_facts, title=title)
+    sources = _resolve_custom_sources(source_url)
+    facts = curator.curate_facts(
+        topic, max_facts=max_facts, title=title, sources=sources
+    )
     return PreviewResponse(topic=topic, facts=facts)
 
 
@@ -245,18 +288,25 @@ def digest(topic: str, max_facts: int = 3, title: str | None = None) -> DigestRe
 
 
 @router.get("/ask", response_model=AnswerResponse)
-def ask(question: str, title: str | None = None) -> AnswerResponse:
+def ask(
+    question: str,
+    title: str | None = None,
+    source_url: str | None = None,
+) -> AnswerResponse:
     """Answer a free-form question from grounded sources, or abstain.
 
     Unlike ``/preview`` (which lists facts about a topic), this retrieves the
     passages most relevant to the *question* and returns the best-supported
     sentence as the answer — with citations. When nothing clears the grounding
     threshold it abstains (``grounded=False``) rather than guessing. ``title``
-    pins a specific Wikipedia page when the question is ambiguous.
+    pins a specific Wikipedia page when the question is ambiguous, and
+    ``source_url`` grounds the answer on a user-supplied page instead of
+    Wikipedia (the default).
     """
     if not question.strip():
         raise HTTPException(status_code=400, detail="question is required")
-    result = curator.answer_question(question, title=title)
+    sources = _resolve_custom_sources(source_url)
+    result = curator.answer_question(question, title=title, sources=sources)
     return AnswerResponse(**result)
 
 

@@ -1,5 +1,7 @@
 # 🧭 Grounded Facts — a mini RAG system with a hallucination guard
 
+[![CI](https://github.com/Alexfosuaa/Grounded-facts/actions/workflows/ci.yml/badge.svg)](https://github.com/Alexfosuaa/Grounded-facts/actions/workflows/ci.yml)
+
 Grounded Facts turns any topic into a set of **source-grounded, cited facts** and
 can email them on a schedule. It is a compact but complete
 **Retrieval-Augmented Generation (RAG)** pipeline: it fetches sources, chunks and
@@ -97,6 +99,8 @@ frontend/                Svelte 5 + Vite single-page app (consumes /api/*)
       CuratePanel.svelte      Explore: grounded facts for a topic (1–50)
       AskPanel.svelte         Ask: extractive QA with citations + abstain state
       FactCard.svelte         A single grounded fact with its citation
+      SourcePicker.svelte     Optional custom source URL (Wikipedia is default)
+      InfoChip.svelte         Badge with an explanatory hover/click popover
       SubscribePanel.svelte   Create a subscription
       SubscriptionsPanel.svelte  List subs + preview the email digest (demo mode)
       DidYouMean.svelte       Disambiguation suggestions
@@ -106,6 +110,7 @@ frontend/                Svelte 5 + Vite single-page app (consumes /api/*)
       Tabs.svelte             Accessible tab bar
 eval/eval.py             Offline evaluation harness (retrieval + guard metrics)
 tests/                   Offline pytest suite (no network, no API key)
+.github/workflows/ci.yml Lint + test backend, run eval, build frontend
 Dockerfile               Multi-stage: build the SPA, then the Python backend
 docker-compose.yml       api + worker services sharing a DB volume
 ```
@@ -155,7 +160,8 @@ Two design choices keep answers honest with only a lexical embedder:
 
 QA compares a whole question against a single sentence, which shares fewer exact
 tokens than a sentence does with its broad topic, so it uses a slightly lower
-grounding bar than fact extraction (`QA_GROUNDING_THRESHOLD`, default `0.15`). If
+grounding bar than fact extraction (`QA_GROUNDING_THRESHOLD`, default `0.15` on
+the hashing embedder and `0.30` on neural backends). If
 nothing clears that bar the endpoint **abstains** (`grounded: false`, `answer:
 null`) instead of guessing. Every answer ships with the source title/URL and a
 short list of **citations** (the passages it drew from), so the UI can always
@@ -166,6 +172,22 @@ show *why*.
 > photosynthesis produce?"*) can still read as **Low** confidence. That is the
 > lexical embedder being cautious, not a wrong answer — the app would rather
 > under-claim than overstate.
+
+**Try another answer.** A single request returns the best answer plus a few
+ranked, above-threshold **alternatives**, so the UI can offer a *"Try another
+answer"* control that cycles through them without another round-trip — handy when
+the top sentence isn't quite the phrasing you wanted.
+
+**Custom sources (Wikipedia is the default).** Both *Explore* and *Ask* accept an
+optional `source_url`: paste a public article link and the app fetches that page,
+strips boilerplate (nav/scripts/footer), and grounds **only** on it instead of
+Wikipedia. A **built-in SSRF guard** rejects non-`http(s)` URLs and any host that
+resolves to a private, loopback, link-local, or cloud-metadata address, so an
+untrusted link can't be used to probe internal services.
+
+**Learn-as-you-go badges.** The grounding, method (*extractive* vs *abstractive*),
+and confidence chips are interactive — hover, focus, or tap them for a plain-language
+explanation of what each term means and how it's computed.
 
 ## Demo mode (email without SMTP)
 
@@ -239,10 +261,11 @@ Copy `.env.example` to `.env` to change any of them.
 
 | Variable              | Default            | Purpose                                              |
 | --------------------- | ------------------ | ---------------------------------------------------- |
-| `EMBED_BACKEND`       | `hashing`          | `hashing` (offline) · `sbert` · `openai`             |
-| `GROUNDING_THRESHOLD` | `0.20`             | Min cosine similarity for a fact to pass the guard   |
-| `QA_GROUNDING_THRESHOLD` | `0.15`          | Min similarity for an **Ask** answer (see note below) |
+| `EMBED_BACKEND`       | `auto`             | `auto` (sbert if installed, else hashing) · `hashing` · `sbert` · `openai` |
+| `GROUNDING_THRESHOLD` | `0.20` / `0.35`    | Min cosine similarity for a fact to pass the guard (default scales with backend) |
+| `QA_GROUNDING_THRESHOLD` | `0.15` / `0.30` | Min similarity for an **Ask** answer (default scales with backend; see note) |
 | `USE_FAISS`           | `auto`             | `auto` · `faiss` · `numpy`                           |
+| `URL_FETCH_TIMEOUT`   | `10`               | Timeout (s) when fetching a user-supplied custom `source_url` |
 | `OPENAI_API_KEY`      | *(unset)*          | Enables grounded LLM generation                      |
 | `OPENAI_MODEL`        | `gpt-4o-mini`      | Model used when an API key is set                    |
 | `USE_LLM`             | `auto`             | Set `0` to force the offline extractive fallback     |
@@ -252,11 +275,14 @@ Copy `.env.example` to `.env` to change any of them.
 | `DB_PATH`             | `subscriptions.db` | SQLite location (shared by API + worker in Docker)   |
 | `SCHED_POLL_INTERVAL` | `60`               | Worker poll interval, seconds                        |
 
-> **Note on the grounding thresholds.** `0.20` is tuned for the lexical hashing
-> embedder; neural backends produce a different score distribution and generally
-> warrant ~`0.35`. Question answering uses the lower `QA_GROUNDING_THRESHOLD`
-> (`0.15`) because a question and a single answer sentence share fewer exact
-> tokens than a sentence shares with its broad topic.
+> **Note on the grounding thresholds.** The defaults **auto-scale with the
+> resolved `EMBED_BACKEND`** (`auto` picks `sbert` when the `ml` extra is installed,
+> else `hashing`): the lexical hashing embedder produces low similarities, so it
+> uses `0.20` (facts) / `0.15` (QA), while neural backends (`sbert`/`openai`) spread
+> scores higher and default to `0.35` / `0.30`. Setting `GROUNDING_THRESHOLD` or
+> `QA_GROUNDING_THRESHOLD` explicitly overrides the auto-selected value. Question
+> answering always uses the lower of the two because a question and a single answer
+> sentence share fewer tokens than a sentence shares with its broad topic.
 
 ---
 
@@ -268,8 +294,8 @@ All endpoints are under `/api`.
 | ------------------------------- | -------------------------------------------------- |
 | `GET /api/health`               | Liveness check                                     |
 | `GET /api/info`                 | Active backends (embedder, vectors, generation) + email dry-run flag |
-| `GET /api/preview?topic=&max_facts=` | Grounded, cited facts for a topic (1–50)      |
-| `GET /api/ask?question=`        | Extractive **question answering** with citations; abstains when nothing is grounded |
+| `GET /api/preview?topic=&max_facts=&source_url=` | Grounded, cited facts for a topic (1–50); optional custom `source_url` |
+| `GET /api/ask?question=&source_url=`  | Extractive **question answering** with citations + ranked alternatives; abstains when nothing is grounded; optional custom `source_url` |
 | `GET /api/digest?topic=&max_facts=` | Preview the email digest for a topic (subject + body) |
 | `GET /api/retrieve?topic=&k=`   | Raw retrieved chunks (the "why" behind a fact)     |
 | `POST /api/subscribe`           | Create a subscription (`email`, `topic`, `cadence`)|
@@ -299,7 +325,24 @@ pytest -q
 ```
 
 Covers chunking, embeddings, the vector store, retrieval + the hallucination
-guard, semantic dedup, the database layer, and the API endpoints.
+guard, semantic dedup, the database layer, custom-source fetching (incl. the
+SSRF guard), and the API endpoints.
+
+### Lint & format
+
+Linting and formatting use [ruff](https://docs.astral.sh/ruff/) (config in
+`pyproject.toml`). Both run in CI:
+
+```powershell
+ruff check backend eval tests      # lint
+ruff format --check backend eval tests   # formatting
+```
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request: it lints and
+tests the backend, runs the offline evaluation harness, and builds the Svelte
+frontend — all without network access or API keys.
 
 ---
 
@@ -339,7 +382,28 @@ raises guard precision.
 - **Backend:** Python, FastAPI, Uvicorn, NumPy, FAISS, SQLite, OpenAI SDK
   (optional), sentence-transformers (optional).
 - **Frontend:** Svelte 5 + Vite (vanilla, no UI framework bloat).
-- **Tooling:** pytest, Docker (multi-stage), docker-compose.
+- **Tooling:** pytest, ruff (lint + format), GitHub Actions CI, Docker
+  (multi-stage), docker-compose.
+
+---
+
+## Roadmap / production hardening
+
+The app is intentionally self-contained (in-memory index, SQLite, offline
+defaults) so it runs anywhere with zero setup. The natural next steps to take it
+from "portfolio-grade" to "production-grade" — and good talking points for how
+I'd scale it:
+
+- **Live deployment** — ship the existing Docker image to Render/Fly/Railway for
+  a public demo URL.
+- **Persistent vector store** — swap the in-memory index for pgvector / Qdrant /
+  Chroma, with the article index cached to disk so restarts stay warm.
+- **Observability & robustness** — structured request logging, timing middleware,
+  per-IP rate limiting, and `/livez` + `/readyz` probes.
+- **Real accounts** — user auth (JWT/session) and per-user subscriptions in place
+  of the single shared admin token.
+- **Frontend tests** — Vitest unit tests + a Playwright end-to-end smoke test,
+  and a TypeScript migration for the SPA.
 
 ---
 

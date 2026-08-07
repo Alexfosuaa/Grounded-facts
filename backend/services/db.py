@@ -7,11 +7,11 @@ closes its connection in a ``finally`` block so a mid-query error can't leak a
 file handle.
 """
 
-import sqlite3
+import datetime
 import json
 import os
-import datetime
-from typing import List, Dict, Any
+import sqlite3
+from typing import Any, Dict, List
 
 # Location of the SQLite file. Overridable via DB_PATH so the API and the
 # delivery worker can share one database on a mounted volume. Tests monkeypatch
@@ -68,7 +68,9 @@ def init_db():
         conn.close()
 
 
-def add_subscription(email: str, topic: str, cadence: str, next_send: datetime.datetime):
+def add_subscription(
+    email: str, topic: str, cadence: str, next_send: datetime.datetime
+):
     """Insert a new subscription due for its first send at ``next_send``."""
     conn = get_conn()
     now = datetime.datetime.utcnow()
@@ -135,7 +137,9 @@ def claim_due_subscription(
         conn.close()
 
 
-def update_next_send(sub_id: int, next_send: datetime.datetime, last_send: datetime.datetime = None):
+def update_next_send(
+    sub_id: int, next_send: datetime.datetime, last_send: datetime.datetime = None
+):
     """Reschedule a subscription's next send (and record its last send)."""
     conn = get_conn()
     try:

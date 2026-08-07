@@ -179,3 +179,74 @@ def test_disambiguate(temp_db, monkeypatch):
         assert body["topic"] == "Photosynthesis"
         assert body["ambiguous"] is True
         assert body["candidates"][1]["title"] == "Photosynthesis (board game)"
+
+
+def test_preview_with_custom_source(temp_db, monkeypatch):
+    # A source_url is fetched and injected so Wikipedia is bypassed; curate_facts
+    # must receive the fetched source.
+    fake_src = {"title": "Blog", "url": "https://ex.com/a", "text": "Some text."}
+    monkeypatch.setattr(fetcher, "fetch_url_source", lambda url, **k: fake_src)
+    captured = {}
+
+    def fake_curate(topic, **kwargs):
+        captured["sources"] = kwargs.get("sources")
+        return [
+            {
+                "fact": "From the blog.",
+                "source_title": "Blog",
+                "source_url": "https://ex.com/a",
+                "grounding_score": 0.5,
+                "method": "extractive",
+            }
+        ]
+
+    monkeypatch.setattr(curator, "curate_facts", fake_curate)
+    with _client(temp_db) as client:
+        r = client.get(
+            "/api/preview",
+            params={"topic": "X", "source_url": "https://ex.com/a"},
+        )
+        assert r.status_code == 200
+        assert captured["sources"] == [fake_src]
+        assert r.json()["facts"][0]["source_title"] == "Blog"
+
+
+def test_preview_rejects_unfetchable_source(temp_db, monkeypatch):
+    # When the URL can't be fetched safely we return 400 rather than silently
+    # falling back to Wikipedia — the user explicitly asked for that source.
+    monkeypatch.setattr(fetcher, "fetch_url_source", lambda url, **k: None)
+    with _client(temp_db) as client:
+        r = client.get(
+            "/api/preview",
+            params={"topic": "X", "source_url": "http://127.0.0.1/"},
+        )
+        assert r.status_code == 400
+
+
+def test_ask_with_custom_source(temp_db, monkeypatch):
+    fake_src = {"title": "Blog", "url": "https://ex.com/a", "text": "Some text."}
+    monkeypatch.setattr(fetcher, "fetch_url_source", lambda url, **k: fake_src)
+    captured = {}
+
+    def fake_answer(question, **kwargs):
+        captured["sources"] = kwargs.get("sources")
+        return {
+            "question": question,
+            "answer": "An answer.",
+            "grounded": True,
+            "confidence": 0.6,
+            "source_title": "Blog",
+            "source_url": "https://ex.com/a",
+            "citations": [],
+            "alternatives": [],
+        }
+
+    monkeypatch.setattr(curator, "answer_question", fake_answer)
+    with _client(temp_db) as client:
+        r = client.get(
+            "/api/ask",
+            params={"question": "Q?", "source_url": "https://ex.com/a"},
+        )
+        assert r.status_code == 200
+        assert captured["sources"] == [fake_src]
+        assert r.json()["alternatives"] == []

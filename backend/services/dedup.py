@@ -13,8 +13,8 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
-from backend.services import db
 from backend.rag.embeddings import Embedder, get_default_embedder
+from backend.services import db
 
 DEFAULT_DEDUP_THRESHOLD = 0.9
 
@@ -35,12 +35,15 @@ def filter_new_facts(
     if not facts:
         return [], []
 
-    previous = [np.asarray(e, dtype=np.float32) for e in db.get_sent_fact_embeddings(subscription_id)]
+    previous = [
+        np.asarray(e, dtype=np.float32)
+        for e in db.get_sent_fact_embeddings(subscription_id)
+    ]
     fact_vecs = embedder.embed([f["fact"] for f in facts])
 
     kept_facts: List[Dict] = []
     kept_embeddings: List[List[float]] = []
-    for fact, vec in zip(facts, fact_vecs):
+    for fact, vec in zip(facts, fact_vecs, strict=True):
         if _too_similar(vec, previous, threshold) or _too_similar(
             vec, kept_embeddings, threshold
         ):
