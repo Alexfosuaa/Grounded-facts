@@ -29,4 +29,6 @@ ENV EMAIL_DRY_RUN=1
 VOLUME ["/data"]
 
 EXPOSE 8000
-CMD ["uvicorn", "backend.api:app", "--host", "0.0.0.0", "--port", "8000"]
+# Shell form so hosts that inject a $PORT (Render/Railway/Fly) are honored;
+# falls back to 8000 for local `docker run` and docker-compose.
+CMD ["sh", "-c", "uvicorn backend.api:app --host 0.0.0.0 --port ${PORT:-8000}"]

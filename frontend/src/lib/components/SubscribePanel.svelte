@@ -8,6 +8,7 @@
   let topic = $state("");
   let email = $state("");
   let cadence = $state("daily");
+  let maxFacts = $state(3);
   let status = $state({ msg: "", state: "" });
 
   // POST /api/subscribe with the form values.
@@ -16,10 +17,12 @@
       status = { msg: "Topic and email are both required.", state: "err" };
       return;
     }
+    // Clamp to the 2–5 range the API accepts so a stray value doesn't 422.
+    const facts = Math.min(5, Math.max(2, Math.round(Number(maxFacts) || 3)));
     try {
       await api("/subscribe", {
         method: "POST",
-        body: JSON.stringify({ topic, email, cadence }),
+        body: JSON.stringify({ topic, email, cadence, max_facts: facts }),
       });
       status = { msg: "Subscribed! You'll receive grounded digests.", state: "ok" };
       topic = "";
@@ -56,6 +59,15 @@
           <option value="daily">Daily</option>
           <option value="hourly">Hourly</option>
           <option value="weekly">Weekly</option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="field-label">Facts</span>
+        <select bind:value={maxFacts}>
+          <option value={2}>2</option>
+          <option value={3}>3</option>
+          <option value={4}>4</option>
+          <option value={5}>5</option>
         </select>
       </label>
     </div>

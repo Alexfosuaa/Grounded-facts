@@ -39,6 +39,38 @@ def test_worker_digest_curates_multiple_sources(temp_db, monkeypatch):
     assert captured.get("max_sources", 1) > 1
 
 
+def test_worker_uses_subscription_max_facts(temp_db, monkeypatch):
+    # The subscriber's chosen fact count must flow into curation, not a hardcoded 3.
+    db = temp_db
+    past = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
+    db.add_subscription("u@e.com", "Physics", "daily", past, max_facts=5)
+    sub = db.list_subscriptions()[0]
+
+    captured = {}
+
+    def fake_curate(topic, **kwargs):
+        captured.update(kwargs)
+        return [
+            {
+                "fact": "A grounded fact.",
+                "source_title": "Src",
+                "source_url": "",
+                "grounding_score": 0.5,
+                "method": "extractive",
+            }
+        ]
+
+    monkeypatch.setattr(curator, "curate_facts", fake_curate)
+    monkeypatch.setattr(
+        worker.dedup, "filter_new_facts", lambda sid, facts: (facts, [[0.1]])
+    )
+    monkeypatch.setattr(worker.emailer, "send_email", lambda *a, **k: True)
+    monkeypatch.setattr(worker.db, "add_sent_fact", lambda *a, **k: None)
+
+    worker.process_subscription(sub)
+    assert captured.get("max_facts") == 5
+
+
 def test_format_email_lists_each_source(temp_db):
     # The rendered digest body should attribute every fact to its own source, so
     # a multi-source digest visibly cites more than one article.

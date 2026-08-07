@@ -96,6 +96,9 @@ class SubscribeRequest(BaseModel):
     email: EmailStr
     topic: str = Field(min_length=1, max_length=200)
     cadence: str = Field(default="daily")
+    # How many grounded facts each digest should aim to include. Kept to a small
+    # 2–5 range so a scheduled email stays focused (default 3).
+    max_facts: int = Field(default=3, ge=2, le=5)
 
     @field_validator("topic")
     @classmethod
@@ -322,8 +325,19 @@ def subscribe(req: SubscribeRequest) -> dict:
     """Create a recurring digest subscription for a topic."""
     if req.cadence not in ("hourly", "daily", "weekly"):
         raise HTTPException(status_code=400, detail="invalid cadence")
-    db.add_subscription(req.email, req.topic, req.cadence, datetime.datetime.utcnow())
-    return {"status": "subscribed", "email": req.email, "topic": req.topic}
+    db.add_subscription(
+        req.email,
+        req.topic,
+        req.cadence,
+        datetime.datetime.utcnow(),
+        max_facts=req.max_facts,
+    )
+    return {
+        "status": "subscribed",
+        "email": req.email,
+        "topic": req.topic,
+        "max_facts": req.max_facts,
+    }
 
 
 @router.get("/subscriptions")

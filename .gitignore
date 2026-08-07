@@ -29,3 +29,6 @@ Thumbs.db
 
 # Local dev screenshot/CDP scratch dir (browser profiles, PNGs, throwaway scripts)
 .shot/
+
+# Local deploy tooling (e.g. downloaded cloudflared binary for quick tunnels)
+.deploy/

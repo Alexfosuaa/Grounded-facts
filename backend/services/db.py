@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     email TEXT NOT NULL,
     topic TEXT NOT NULL,
     cadence TEXT NOT NULL,
+    max_facts INTEGER NOT NULL DEFAULT 3,
     next_send TIMESTAMP NOT NULL,
     created_at TIMESTAMP NOT NULL,
     last_send TIMESTAMP
@@ -60,25 +61,50 @@ def get_conn():
 
 def init_db():
     """Create the tables and indexes if they don't already exist."""
+    # Ensure the parent directory exists (e.g. DB_PATH=/data/subscriptions.db on
+    # a host that doesn't pre-create the mount). No-op for a bare filename.
+    parent = os.path.dirname(DB_PATH)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     conn = get_conn()
     try:
         with conn:
             conn.executescript(CREATE_SQL)
+            _migrate_schema(conn)
     finally:
         conn.close()
 
 
+def _migrate_schema(conn):
+    """Add columns introduced after the first release so existing databases
+    upgrade in place (CREATE TABLE IF NOT EXISTS never alters an existing table).
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(subscriptions)")}
+    if "max_facts" not in cols:
+        conn.execute(
+            "ALTER TABLE subscriptions ADD COLUMN max_facts INTEGER NOT NULL DEFAULT 3"
+        )
+
+
 def add_subscription(
-    email: str, topic: str, cadence: str, next_send: datetime.datetime
+    email: str,
+    topic: str,
+    cadence: str,
+    next_send: datetime.datetime,
+    max_facts: int = 3,
 ):
-    """Insert a new subscription due for its first send at ``next_send``."""
+    """Insert a new subscription due for its first send at ``next_send``.
+
+    ``max_facts`` is how many grounded facts each digest should aim to include
+    (the subscriber picks this on the form); it defaults to 3 for older callers.
+    """
     conn = get_conn()
     now = datetime.datetime.utcnow()
     try:
         with conn:
             conn.execute(
-                "INSERT INTO subscriptions (email, topic, cadence, next_send, created_at) VALUES (?,?,?,?,?)",
-                (email, topic, cadence, next_send, now),
+                "INSERT INTO subscriptions (email, topic, cadence, max_facts, next_send, created_at) VALUES (?,?,?,?,?,?)",
+                (email, topic, cadence, max_facts, next_send, now),
             )
     finally:
         conn.close()

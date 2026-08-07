@@ -252,6 +252,10 @@ docker compose up --build
 # API + UI on http://localhost:8000
 ```
 
+**Deploying publicly?** See [`DEPLOY.md`](./DEPLOY.md) — a `render.yaml` blueprint
+gives a one-click free deploy from GitHub, and the image runs on any Docker host
+(it honors `$PORT`).
+
 ---
 
 ## Configuration

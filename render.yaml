@@ -1,0 +1,27 @@
+# Render Blueprint — one-click deploy of the Docker image straight from GitHub.
+#
+# In the Render dashboard: New ▸ Blueprint ▸ connect this repo and Apply.
+# Render builds the multi-stage Dockerfile (Svelte SPA + FastAPI) and serves the
+# whole app — API and UI — from a single free web service.
+#
+# The container binds the $PORT Render injects (the Dockerfile CMD honors it) and
+# is health-checked at /api/health. The default (offline) hashing embedder keeps
+# the image light enough for the free 512 MB instance — no torch, no GPU.
+services:
+  - type: web
+    name: grounded-facts
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # Log emails instead of sending (no SMTP account needed for the demo).
+      - key: EMAIL_DRY_RUN
+        value: "1"
+      # SQLite lives on the container's ephemeral filesystem; subscriptions reset
+      # on redeploy/spin-down. Add a paid Render disk mounted at /data and set
+      # DB_PATH=/data/subscriptions.db to persist them.
+      # Uncomment and paste a key in the dashboard to enable grounded LLM facts:
+      # - key: OPENAI_API_KEY
+      #   sync: false

@@ -34,3 +34,14 @@ def test_sent_facts_roundtrip(temp_db):
     embs = db.get_sent_fact_embeddings(sub_id)
     assert len(embs) == 2
     assert embs[0] == [0.1, 0.2, 0.3]
+
+
+def test_subscription_max_facts(temp_db):
+    # The chosen facts-per-digest count is stored; older-style callers default to 3.
+    db = temp_db
+    now = datetime.datetime.utcnow()
+    db.add_subscription("default@b.com", "A", "daily", now)
+    db.add_subscription("custom@b.com", "B", "daily", now, max_facts=5)
+    subs = {s["email"]: s for s in db.list_subscriptions()}
+    assert subs["default@b.com"]["max_facts"] == 3
+    assert subs["custom@b.com"]["max_facts"] == 5

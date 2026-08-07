@@ -182,6 +182,36 @@ def test_subscribe_rejects_bad_cadence(temp_db):
         assert r.status_code == 400
 
 
+def test_subscribe_custom_max_facts(temp_db):
+    # The subscriber can choose how many facts each digest carries; it is echoed
+    # back and persisted on the subscription row.
+    with _client(temp_db) as client:
+        r = client.post(
+            "/api/subscribe",
+            json={
+                "email": "user@example.com",
+                "topic": "Physics",
+                "cadence": "daily",
+                "max_facts": 5,
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["max_facts"] == 5
+        subs = client.get("/api/subscriptions").json()["subscriptions"]
+        assert subs[0]["max_facts"] == 5
+
+
+def test_subscribe_rejects_out_of_range_max_facts(temp_db):
+    # Only 2–5 is allowed, so a digest email stays focused.
+    with _client(temp_db) as client:
+        for bad in (1, 6):
+            r = client.post(
+                "/api/subscribe",
+                json={"email": "u@example.com", "topic": "Physics", "max_facts": bad},
+            )
+            assert r.status_code == 422
+
+
 def test_run_due_with_no_subscriptions(temp_db):
     with _client(temp_db) as client:
         r = client.post("/api/run-due")

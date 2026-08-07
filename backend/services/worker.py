@@ -61,9 +61,11 @@ def process_subscription(sub: Dict, now: Optional[datetime.datetime] = None) -> 
 
     try:
         # Curate across several related articles so the digest draws on multiple
-        # sources rather than a single page.
+        # sources rather than a single page. The subscriber chooses how many
+        # facts they want; fall back to 3 for rows created before that was added.
+        max_facts = sub.get("max_facts") or 3
         facts = curator.curate_facts(
-            topic, max_facts=3, max_sources=curator.DIGEST_MAX_SOURCES
+            topic, max_facts=max_facts, max_sources=curator.DIGEST_MAX_SOURCES
         )
         kept, embeddings = dedup.filter_new_facts(sub["id"], facts)
 
