@@ -138,8 +138,13 @@ def test_fetch_url_source_reads_public_page(monkeypatch):
 
     class FakeResp:
         encoding = "utf-8"
+        is_redirect = False
+        headers: dict = {}
 
         def raise_for_status(self):
+            pass
+
+        def close(self):
             pass
 
         def iter_content(self, chunk_size=16384):
@@ -155,6 +160,37 @@ def test_fetch_url_source_reads_public_page(monkeypatch):
     assert src is not None
     assert src["title"] == "T"
     assert "Readable content here" in src["text"]
+
+
+def test_is_safe_public_url_rejects_ambiguous():
+    # Parser/client disagreements that enable SSRF bypasses must be rejected up
+    # front, regardless of the (public-looking) host they appear to point at.
+    assert fetcher._is_safe_public_url("http://127.0.0.1:80\\@8.8.8.8/") is False
+    assert fetcher._is_safe_public_url("http://8.8.8.8@127.0.0.1/") is False
+
+
+def test_fetch_url_source_rejects_redirect_to_internal(monkeypatch):
+    # A public URL that 302-redirects to an internal address must be refused: the
+    # guard re-validates every hop, not just the originally supplied URL.
+    import requests
+
+    class RedirectResp:
+        is_redirect = True
+        headers = {"Location": "http://169.254.169.254/latest/meta-data/"}
+
+        def close(self):
+            pass
+
+    real_guard = fetcher._is_safe_public_url
+    # Only the original URL is treated as safe; the redirect target (link-local
+    # cloud-metadata address) is judged by the real guard and must be rejected.
+    monkeypatch.setattr(
+        fetcher,
+        "_is_safe_public_url",
+        lambda u: u == "https://example.com/a" or real_guard(u),
+    )
+    monkeypatch.setattr(requests, "get", lambda *a, **k: RedirectResp())
+    assert fetcher.fetch_url_source("https://example.com/a") is None
 
 
 def test_fetch_url_source_rejects_unsafe_without_network(monkeypatch):

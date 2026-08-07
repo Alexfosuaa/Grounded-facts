@@ -59,7 +59,13 @@ def build_index(
     metadatas: List[Dict] = []
     order = 0  # running position in the corpus, so facts can later be re-sorted
     for src in sources:
-        for chunk in chunk_text(src.get("text", ""), chunk_words, overlap):
+        # `source_order` restarts per article, so the first chunk of *each*
+        # source (source_order == 0) is that article's lead/definition. `order`
+        # stays global so facts across sources can still be sorted into corpus
+        # order. Retrieval uses source_order to force in every article's lead.
+        for source_order, chunk in enumerate(
+            chunk_text(src.get("text", ""), chunk_words, overlap)
+        ):
             chunk_texts.append(chunk)
             metadatas.append(
                 {
@@ -68,6 +74,7 @@ def build_index(
                     "source_url": src.get("url", ""),
                     "topic": topic,
                     "order": order,
+                    "source_order": source_order,
                 }
             )
             order += 1
@@ -97,9 +104,12 @@ def get_index(
     key = (topic.lower().strip(), (title or "").lower().strip(), embedder.name)
 
     if sources is not None or force_rebuild:
-        store = build_index(topic, sources=sources, embedder=embedder, title=title)
-        _cache_put(key, store)
-        return store
+        # Injected sources (custom URLs, QA multi-article fetches, tests) bypass
+        # the cache for BOTH read and write. Caching them under the
+        # (topic, title, embedder) key would let a later *default* request for
+        # the same topic be served the injected content — cache poisoning — and
+        # would also serve stale injected data. Always build fresh, never store.
+        return build_index(topic, sources=sources, embedder=embedder, title=title)
 
     if key not in _INDEX_CACHE:
         store = build_index(topic, embedder=embedder, title=title)

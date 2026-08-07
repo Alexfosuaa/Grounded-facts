@@ -185,25 +185,49 @@ _URL_MAX_BYTES = 2_000_000  # cap the download so a huge page can't exhaust memo
 
 
 def _is_safe_public_url(url: str) -> bool:
-    """SSRF guard: allow only http(s) URLs whose host resolves to public IPs.
+    """SSRF guard: allow only unambiguous http(s) URLs whose host resolves to
+    public (globally routable) IP addresses.
 
-    A user-supplied link is untrusted input. Without this check it could be used
-    to reach internal services (databases, cloud metadata endpoints at
-    169.254.169.254, localhost admin panels). We resolve the host and reject any
-    private, loopback, link-local, reserved, or multicast address.
+    A user-supplied link is untrusted input. Without this check it could reach
+    internal services (databases, cloud metadata at 169.254.169.254, localhost
+    admin panels). We first reject syntax that URL parsers and HTTP clients
+    disagree on (backslashes, embedded credentials), then resolve the host and
+    reject any address that is not globally routable.
+
+    Note: this is a point-in-time check. A hostile DNS server could still rebind
+    to an internal address between this check and the actual connection
+    (TOCTOU / DNS rebinding); :func:`fetch_url_source` therefore re-validates
+    every redirect hop. Fully closing rebinding would require pinning the
+    resolved IP at connect time, which is out of scope for this app.
     """
     import ipaddress
     import socket
     from urllib.parse import urlparse
 
     try:
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        # Browsers treat "\" as "/", but urlparse/urllib do not. That
+        # disagreement enables bypasses like "http://127.0.0.1:80\@evil.com/"
+        # (guard sees host evil.com; the client connects to 127.0.0.1). Reject.
+        if "\\" in url:
             return False
-        for info in socket.getaddrinfo(parsed.hostname, None):
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        # Embedded credentials ("http://8.8.8.8@169.254.169.254/") confuse host
+        # extraction; a legitimate article URL never carries userinfo.
+        if parsed.username or parsed.password:
+            return False
+        host = parsed.hostname
+        if not host:
+            return False
+        _ = parsed.port  # raises ValueError on a bad port -> rejected below
+        for info in socket.getaddrinfo(host, None):
             ip = ipaddress.ip_address(info[4][0])
+            # is_global is False for private/loopback/link-local/reserved/CGNAT/
+            # unspecified ranges; the explicit flags belt-and-suspender any gaps.
             if (
-                ip.is_private
+                not ip.is_global
+                or ip.is_private
                 or ip.is_loopback
                 or ip.is_link_local
                 or ip.is_reserved
@@ -227,20 +251,52 @@ def fetch_url_source(url: str, max_chars: int = _PRIMARY_CHARS) -> Optional[Dict
     if not _is_safe_public_url(url):
         return None
 
+    import time
+    from urllib.parse import urljoin
+
     try:
         import requests
 
-        resp = requests.get(
-            url,
-            headers={"User-Agent": _USER_AGENT},
-            timeout=_URL_FETCH_TIMEOUT,
-            stream=True,
-        )
+        # A single wall-clock budget across every redirect hop and the body read.
+        # requests' own timeout is per-read (inactivity) only, so a server that
+        # drips one byte at a time (slowloris) could otherwise tie up the worker
+        # indefinitely.
+        deadline = time.monotonic() + _URL_FETCH_TIMEOUT
+        current = url
+        resp = None
+        for _ in range(5):  # follow a bounded number of redirects manually
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            resp = requests.get(
+                current,
+                headers={"User-Agent": _USER_AGENT},
+                timeout=remaining,
+                stream=True,
+                allow_redirects=False,  # never auto-follow: re-validate each hop
+            )
+            if not resp.is_redirect:
+                break
+            location = resp.headers.get("Location", "")
+            resp.close()
+            if not location:
+                return None
+            current = urljoin(current, location)
+            # A public URL must not redirect to an internal address: the classic
+            # SSRF-via-redirect bypass, since the guard only saw the original URL.
+            if not _is_safe_public_url(current):
+                return None
+        else:
+            return None  # too many redirects
+
         resp.raise_for_status()
-        # Bounded read so an enormous response can't exhaust memory.
+        # Bounded read (both size AND wall-clock) so a huge or slow-drip response
+        # can't exhaust memory or tie up the worker.
         chunks: List[bytes] = []
         total = 0
         for chunk in resp.iter_content(chunk_size=16384):
+            if time.monotonic() > deadline:
+                break
             if not chunk:
                 continue
             chunks.append(chunk)

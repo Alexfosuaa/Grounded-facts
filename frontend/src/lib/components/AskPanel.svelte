@@ -38,6 +38,27 @@
   );
   let current = $derived(answers[answerIndex] ?? null);
 
+  // Keep the evidence panel in sync with the *shown* answer. The primary answer
+  // shows the full retrieved passages; an alternative (which comes from a single
+  // retrieved sentence) shows its own source so we never display citations that
+  // belong to a different answer.
+  let displayCitations = $derived(
+    !result
+      ? []
+      : answerIndex === 0
+        ? (result.citations ?? [])
+        : current
+          ? [
+              {
+                source_title: current.source_title,
+                source_url: current.source_url,
+                snippet: current.answer,
+                score: current.confidence,
+              },
+            ]
+          : [],
+  );
+
   // Map the raw cosine confidence of the *shown* answer to a friendly label +
   // chip colour. QA uses a lower grounding bar than fact extraction (see
   // QA_GROUNDING_THRESHOLD), so a correct answer can still read as "Low" when
@@ -189,12 +210,12 @@
         </div>
       {/if}
 
-      {#if result.citations.length}
+      {#if displayCitations.length}
         <div class="citations">
           <p class="citations-label">
             {result.grounded ? "Sources" : "Closest passages"}
           </p>
-          {#each result.citations as c}
+          {#each displayCitations as c}
             <div class="citation">
               <div class="citation-head">
                 {#if c.source_url}

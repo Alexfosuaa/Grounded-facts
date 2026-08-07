@@ -172,8 +172,9 @@ def retrieve(
         for score, meta in hits
     ]
     if include_lead:
-        # Force in the lead chunk of each distinct article, not just the first.
-        leads = [m for m in store.metadatas if m.get("order") == 0]
+        # Force in the lead chunk of each distinct article (source_order == 0 is
+        # the first chunk *within* each source), not just the corpus-wide first.
+        leads = [m for m in store.metadatas if m.get("source_order") == 0]
         for lead in leads:
             if any(r["text"] == lead["text"] for r in results):
                 continue
