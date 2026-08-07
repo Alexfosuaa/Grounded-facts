@@ -79,7 +79,8 @@ def process_subscription(sub: Dict, now: Optional[datetime.datetime] = None) -> 
 
         subject = f"Your facts about {topic}"
         body = format_email(topic, kept)
-        if emailer.send_email(sub["email"], subject, body):
+        send_error = emailer.try_send(sub["email"], subject, body)
+        if send_error is None:
             for fact, emb in zip(kept, embeddings, strict=True):
                 db.add_sent_fact(sub["id"], fact["fact"], emb)
             return {
@@ -91,7 +92,15 @@ def process_subscription(sub: Dict, now: Optional[datetime.datetime] = None) -> 
 
         # Delivery failed. The row was already advanced by the claim, so it is
         # retried on the next cadence rather than immediately (at-most-once).
-        return {"id": sub["id"], "topic": topic, "status": "send_failed", "sent": 0}
+        # Surface the real reason (e.g. bad SMTP credentials) so it shows up in
+        # the run-due result and logs instead of being an opaque "send_failed".
+        return {
+            "id": sub["id"],
+            "topic": topic,
+            "status": "send_failed",
+            "sent": 0,
+            "error": send_error,
+        }
     except Exception as exc:  # one bad subscription must not kill the whole pass
         print(f"[worker] error processing subscription {sub['id']}: {exc}")
         return {"id": sub["id"], "topic": topic, "status": "error", "sent": 0}

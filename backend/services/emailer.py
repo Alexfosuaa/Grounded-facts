@@ -30,13 +30,20 @@ def is_dry_run() -> bool:
     return _dry_run_active(os.getenv("SMTP_HOST"))
 
 
-def send_email(
+def try_send(
     to_email: str,
     subject: str,
     body_text: str,
     body_html: Optional[str] = None,
-) -> bool:
-    """Send an email. Returns True on success (or on a logged dry-run)."""
+) -> Optional[str]:
+    """Attempt delivery. Returns ``None`` on success (or on a logged dry-run),
+    otherwise a short error string (``ExceptionType: message``) describing why it
+    failed.
+
+    Kept separate from :func:`send_email` so the worker can surface the *real*
+    reason a send failed (e.g. a bad Gmail App Password) in its result and logs
+    instead of silently swallowing it behind a bare ``False``.
+    """
     smtp_host = os.getenv("SMTP_HOST")
     smtp_port = int(os.getenv("SMTP_PORT", "587"))
     smtp_user = os.getenv("SMTP_USER")
@@ -48,7 +55,7 @@ def send_email(
             f"[EMAIL DRY-RUN] To: {to_email} | Subject: {subject}\n"
             f"{body_text}\n{'-' * 40}"
         )
-        return True
+        return None
 
     try:
         # Build the message inside the try: a subject/recipient carrying stray
@@ -70,7 +77,22 @@ def send_email(
             if smtp_user and smtp_pass:
                 smtp.login(smtp_user, smtp_pass)
             smtp.send_message(msg)
-        return True
+        return None
     except Exception as exc:
-        print("Error sending email:", exc)
-        return False
+        error = f"{type(exc).__name__}: {exc}"
+        print("Error sending email:", error)
+        return error
+
+
+def send_email(
+    to_email: str,
+    subject: str,
+    body_text: str,
+    body_html: Optional[str] = None,
+) -> bool:
+    """Send an email. Returns True on success (or on a logged dry-run).
+
+    Thin boolean wrapper around :func:`try_send` for callers that only care
+    whether delivery succeeded, not why it didn't.
+    """
+    return try_send(to_email, subject, body_text, body_html) is None

@@ -31,7 +31,7 @@ def test_worker_digest_curates_multiple_sources(temp_db, monkeypatch):
     monkeypatch.setattr(
         worker.dedup, "filter_new_facts", lambda sid, facts: (facts, [[0.1]])
     )
-    monkeypatch.setattr(worker.emailer, "send_email", lambda *a, **k: True)
+    monkeypatch.setattr(worker.emailer, "try_send", lambda *a, **k: None)
     monkeypatch.setattr(worker.db, "add_sent_fact", lambda *a, **k: None)
 
     result = worker.process_subscription(sub)
@@ -64,11 +64,46 @@ def test_worker_uses_subscription_max_facts(temp_db, monkeypatch):
     monkeypatch.setattr(
         worker.dedup, "filter_new_facts", lambda sid, facts: (facts, [[0.1]])
     )
-    monkeypatch.setattr(worker.emailer, "send_email", lambda *a, **k: True)
+    monkeypatch.setattr(worker.emailer, "try_send", lambda *a, **k: None)
     monkeypatch.setattr(worker.db, "add_sent_fact", lambda *a, **k: None)
 
     worker.process_subscription(sub)
     assert captured.get("max_facts") == 5
+
+
+def test_worker_surfaces_send_error(temp_db, monkeypatch):
+    # When SMTP delivery fails, the result must carry the real reason (so a bad
+    # Gmail App Password shows up in /run-due and logs instead of a silent 0).
+    db = temp_db
+    past = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
+    db.add_subscription("u@e.com", "Physics", "daily", past)
+    sub = db.list_subscriptions()[0]
+
+    monkeypatch.setattr(
+        curator,
+        "curate_facts",
+        lambda topic, **kwargs: [
+            {
+                "fact": "A grounded fact.",
+                "source_title": "Src",
+                "source_url": "",
+                "grounding_score": 0.5,
+                "method": "extractive",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        worker.dedup, "filter_new_facts", lambda sid, facts: (facts, [[0.1]])
+    )
+    monkeypatch.setattr(
+        worker.emailer,
+        "try_send",
+        lambda *a, **k: "SMTPAuthenticationError: (535, b'Bad credentials')",
+    )
+
+    result = worker.process_subscription(sub)
+    assert result["status"] == "send_failed"
+    assert "SMTPAuthenticationError" in result["error"]
 
 
 def test_format_email_lists_each_source(temp_db):
